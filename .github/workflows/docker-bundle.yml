@@ -112,7 +112,7 @@ jobs:
       # workspace cannot always write through. Ordering it first sidesteps that entirely.
       - name: Build busbar-plugin-pack (host target, build tool only)
         working-directory: busbar
-        run: cargo build --release -p busbar-plugin-sdk --features pack --bin busbar-plugin-pack
+        run: cargo build --release -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
 
       # scripts/pgo-build.sh sets RUSTFLAGS itself for both of its cargo phases, and a RUSTFLAGS
       # set in the environment would simply be overridden by it (cargo gives the env var

@@ -39,7 +39,7 @@
 
 mod compress;
 
-use busbar_plugin_sdk::HookHandler;
+use busbar_contract::abi::sdk::HookHandler;
 use compress::{Knobs, Metrics, build_status, describe_reply, run_transform};
 use serde_json::{Map, Value, json};
 use std::sync::{Mutex, RwLock};
@@ -131,7 +131,17 @@ fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
     Ok(Box::new(Headroom::new(knobs)))
 }
 
-busbar_plugin_sdk::export_hook_plugin!(open);
+busbar_contract::abi::sdk::export_hook_plugin!(open);
+
+/// THE LINKED ENTRY (DECISIONS #2 rule (1)): what a busbar build that compiles this gate in registers
+/// onto the hook axis — the same row, name and alias a dropped-in signed tarball of this crate's
+/// `cdylib` states, and the boundary (`BUSBAR_COLD_ENTRY`, emitted by the one `export_hook_plugin!`
+/// above) the loader's one cold-lane load runs over. One source, both doors.
+pub mod linked {
+    /// `(name, alias, boundary)`.
+    pub const HOOK: (&str, &str, &busbar_contract::abi::sdk::ColdEntry) =
+        ("headroom", "headroom", &super::BUSBAR_COLD_ENTRY);
+}
 
 #[cfg(test)]
 #[path = "tests/lib.rs"]

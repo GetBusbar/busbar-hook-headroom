@@ -168,7 +168,7 @@ jobs:
 
       - name: Build busbar-plugin-pack (from the sibling busbar checkout)
         working-directory: busbar
-        run: cargo build --release --target ${{ matrix.target }} -p busbar-plugin-sdk --features pack --bin busbar-plugin-pack
+        run: cargo build --release --target ${{ matrix.target }} -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
         shell: bash
 
       - name: Package + sign the plugin tarball

@@ -12,7 +12,7 @@
 //! never triggers BM25/TextCrusher's real compression path, since `TextCrusher` passes short texts
 //! (<6 segments) through unchanged.
 
-use busbar_api::{
+use busbar_contract::hooks::{
     Candidate, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest, TransformOutcome,
 };
 use busbar_plugin_loader::hook::{HookProjectors, load_hook_from_bytes};
@@ -120,7 +120,7 @@ fn projectors() -> Arc<HookProjectors> {
                 .and_then(|m| m.as_array())
             {
                 Some(msgs) if !msgs.is_empty() => {
-                    TransformOutcome::Rewrite(busbar_api::RewriteReply {
+                    TransformOutcome::Rewrite(busbar_contract::hooks::RewriteReply {
                         messages: msgs.clone(),
                         tools: Vec::new(),
                     })
@@ -129,7 +129,7 @@ fn projectors() -> Arc<HookProjectors> {
             }
         }),
         status: Box::new(|v| {
-            v.get("status").map(|s| busbar_api::HookStatus {
+            v.get("status").map(|s| busbar_contract::hooks::HookStatus {
                 settings_version: s.get("settings_version").and_then(|x| x.as_u64()),
                 settings: s.get("settings").and_then(|x| x.as_object()).cloned(),
                 metrics: s.get("metrics").and_then(|m| m.as_array()).cloned(),
@@ -176,7 +176,7 @@ fn req_with_history(history: String, ask: &str) -> RoutingRequest<'static> {
         system_chars: 0,
         max_tokens: None,
         stream: false,
-        prompt: Some(busbar_api::PromptProjection {
+        prompt: Some(busbar_contract::hooks::PromptProjection {
             system: None,
             messages: vec![
                 ("user".into(), history.into()),

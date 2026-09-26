@@ -3,7 +3,7 @@
 
 //! The pure half of the plugin: busbar's `transform` payload in, reply JSON out — plus the
 //! `configure`/`describe`/`status` support types the [`crate::Headroom`] gate wires into
-//! [`busbar_plugin_sdk::HookHandler`].
+//! [`busbar_contract::abi::sdk::HookHandler`].
 //!
 //! This module has NO knowledge of the dlopen ABI or the SDK trait; it is exhaustively unit
 //! testable on its own (kept as a straight port of the original Unix-socket hook's pure logic —
