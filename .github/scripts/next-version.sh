@@ -11,7 +11,15 @@
 # Behaviour:
 #   * explicit INPUT_VERSION            -> v<INPUT_VERSION>
 #   * no prior v* tag (brand-new repo)  -> v<INITIAL_VERSION>   (NEVER errors — first release)
-#   * otherwise                         -> patch-bump the highest existing v* tag
+#   * otherwise                         -> the GREATER of
+#         - the patch-bump of the highest existing v* tag, and
+#         - the root Cargo.toml [package] version (when a Cargo.toml is present)
+#     so the result is always above every existing tag AND never below the version the crate
+#     declares. headroom-release-watch.yml bumps Cargo.toml on dev for every headroom-core update,
+#     and headroom-release-publish.yml tags that Cargo.toml version; computing from the tags alone
+#     (the old rule) gave release-on-upstream v2.0.8 while Cargo.toml already said 2.0.22 — two
+#     release paths disagreeing about the next version. release-on-upstream stamps the tag it cuts
+#     back into Cargo.toml, so after any cut the two agree again.
 # Fully `set -u` safe: every variable is initialised before use, so no "unbound variable".
 set -euo pipefail
 
@@ -39,4 +47,15 @@ patch="${patch%%[-+]*}"          # drop any -rc / +build suffix on the patch com
 case "$major" in ''|*[!0-9]*) major=0 ;; esac
 case "$minor" in ''|*[!0-9]*) minor=0 ;; esac
 case "$patch" in ''|*[!0-9]*) patch=0 ;; esac
-printf 'v%s.%s.%s\n' "$major" "$minor" "$((patch + 1))"
+next="${major}.${minor}.$((patch + 1))"
+
+# The crate's declared version: the first `version = "X.Y.Z"` of the root Cargo.toml's [package].
+declared=""
+if [ -f Cargo.toml ]; then
+  declared="$(awk '/^\[package\]/{p=1; next} /^\[/{p=0} p && /^version *= *"/{gsub(/.*= *"|".*/, ""); print; exit}' Cargo.toml)"
+fi
+if [[ "$declared" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+   && [ "$(printf '%s\n%s\n' "$next" "$declared" | sort -V | tail -1)" = "$declared" ]; then
+  next="$declared"
+fi
+printf 'v%s\n' "$next"

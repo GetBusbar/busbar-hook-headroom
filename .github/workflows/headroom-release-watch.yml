@@ -109,11 +109,13 @@ jobs:
           # Prove the lexical build + tests are green against the new headroom BEFORE pushing anything.
           cargo build --release --locked
           cargo test --locked
-          # Bump our own patch version (a dependency bump is a new hook release).
-          old="$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)"
-          new="$(echo "$old" | awk -F. '{printf "%s.%s.%s", $1, $2, $3+1}')"
-          perl -0pi -e 's/^version = "'"$old"'"/version = "'"$new"'"/m' Cargo.toml
-          cargo update -p headroom-hook --precise "$new" 2>/dev/null || cargo generate-lockfile
+          # Our own next version (a dependency bump is a new hook release), from the ONE version rule
+          # every release path shares (.github/scripts/next-version.sh: the greater of the highest
+          # v* tag's patch-bump and Cargo.toml's version). Bumping Cargo.toml alone, ignoring tags,
+          # is how dev reached 2.0.22 while release-on-upstream computed v2.0.8. An already
+          # unreleased Cargo.toml version (above every tag) is kept, not skipped past.
+          new="$(bash .github/scripts/next-version.sh)"; new="${new#v}"
+          bash .github/scripts/stamp-version.sh "$new"
           git config user.name  "headroom-release-watch"
           git config user.email "actions@users.noreply.github.com"
           git add Cargo.toml Cargo.lock

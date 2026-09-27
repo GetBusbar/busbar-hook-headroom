@@ -1,9 +1,11 @@
 # Re-cut this plugin's own next signed release when busbar core ships a NEWER version.
 #
 # On an upstream-release dispatch (or daily self-heal cron, or a manual run) this compares the
-# incoming busbar version against the version recorded in .busbar-ref (field 2) and cuts ONLY when
-# the incoming version is strictly newer (sort -V). A same-version core re-tag is a clean no-op:
-# no commit, no tag. On a real cut it MOVES THE PIN with .github/scripts/repin-busbar.sh — .busbar-ref
+# incoming busbar RELEASE — its version AND the commit it resolves to — against .busbar-ref
+# ("<sha> <version>") via `repin-busbar.sh --decide`, and cuts when upstream moved: the incoming
+# version is strictly newer (sort -V), OR it is the same version at a DIFFERENT commit (a v1.6.0 tag
+# whose commit is not the recorded pin, e.g. a pin taken before the release was tagged). Same
+# version at the same commit is a clean no-op: no commit, no tag. On a real cut it MOVES THE PIN with .github/scripts/repin-busbar.sh — .busbar-ref
 # becomes "<new-sha> <new-version>", every manifest's busbar-contract git `rev` becomes <new-sha>,
 # and Cargo.lock re-resolves that one source (busbar 1.6.0: the plugin builds against the contract by
 # git rev, so the record and the manifests must move together or ci.yml's `pin` job refuses the
@@ -102,15 +104,10 @@ jobs:
           if [ "$force" = yes ]; then
             should_cut=yes
             echo "::notice::manual workflow_dispatch -> cutting a release"
-          elif [ -z "$in_ver" ]; then
-            echo "::notice::no incoming busbar version (recorded=${rec_ver:-none}) -> nothing to do"
-          elif [ "$in_ver" = "$rec_ver" ]; then
-            echo "::notice::incoming busbar ${in_ver} == recorded ${rec_ver} (same-version re-tag) -> nothing to do"
-          elif [ "$(printf '%s\n%s\n' "$rec_ver" "$in_ver" | sort -V | tail -1)" = "$in_ver" ]; then
-            should_cut=yes
-            echo "::notice::busbar advanced (recorded=${rec_ver:-none} -> ${in_ver}) -> cutting a release"
           else
-            echo "::notice::incoming busbar ${in_ver} not newer than recorded ${rec_ver} -> nothing to do"
+            # Upstream moved = newer version, or the same version at a different release commit.
+            decision="$(bash .github/scripts/repin-busbar.sh --decide "$in_sha" "$in_ver")"
+            [ "$decision" = cut ] && should_cut=yes
           fi
           {
             echo "should_cut=$should_cut"
@@ -167,29 +164,43 @@ jobs:
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         if: steps.resolve.outputs.should_cut == 'yes'
 
-      - name: Dry-run — the repin path against the recorded pin (must change nothing)
+      - name: Dry-run — the repin path against the recorded pin (must change nothing), and the version stamp
         if: steps.resolve.outputs.should_cut == 'yes' && github.event.inputs.dry_run == 'true'
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
         run: |
           set -euo pipefail
           bash .github/scripts/repin-busbar.sh "$(cut -d' ' -f1 .busbar-ref)" "$(cut -d' ' -f2 .busbar-ref)"
           git diff --exit-code -- .busbar-ref Cargo.lock ':(glob)**/Cargo.toml' \
             || { echo "::error::dry-run: re-pinning to the recorded rev changed files"; exit 1; }
           echo "dry-run OK: repin-busbar.sh is a no-op at the recorded pin"
+          bash .github/scripts/stamp-version.sh "${TAG#v}"
+          grep -qx "version = \"${TAG#v}\"" Cargo.toml || { echo "::error::dry-run: Cargo.toml was not stamped ${TAG#v}"; exit 1; }
+          cargo metadata --format-version 1 --locked >/dev/null
+          git checkout -- Cargo.toml Cargo.lock
+          echo "dry-run OK: Cargo.toml + Cargo.lock stamp to ${TAG#v} (reverted, nothing committed)"
 
-      - name: Move the busbar pin (.busbar-ref + manifests + Cargo.lock)
-        if: steps.guard.outputs.exists == 'no' && steps.resolve.outputs.in_sha != '' && github.event.inputs.dry_run != 'true'
+      # Moves the busbar pin (when upstream supplied a commit) AND stamps the tag's version into
+      # Cargo.toml [package] + Cargo.lock, so the tagged commit declares the version it is released
+      # as and next-version.sh (max of tag bump and Cargo.toml) stays consistent with every path that
+      # tags this repo (headroom-release-publish tags the Cargo.toml version).
+      - name: Move the busbar pin and stamp the release version (.busbar-ref + manifests + Cargo.toml + Cargo.lock)
+        if: steps.guard.outputs.exists == 'no' && github.event.inputs.dry_run != 'true'
         env:
           TAG: ${{ steps.ver.outputs.tag }}
           IN_SHA: ${{ steps.resolve.outputs.in_sha }}
           IN_VER: ${{ steps.resolve.outputs.in_ver }}
         run: |
           set -euo pipefail
-          bash .github/scripts/repin-busbar.sh "${IN_SHA}" "${IN_VER}"
+          if [ -n "${IN_SHA}" ]; then
+            bash .github/scripts/repin-busbar.sh "${IN_SHA}" "${IN_VER}"
+          fi
+          bash .github/scripts/stamp-version.sh "${TAG#v}"
           if git diff --quiet; then
-            echo "::notice::busbar pin already at ${IN_SHA} ${IN_VER}, no commit needed"
+            echo "::notice::pin and version already match ${TAG}, no commit needed"
           else
             git add -u
-            git commit -m "busbar pin: ${IN_VER} (${IN_SHA}) for the ${TAG} release — .busbar-ref, manifests, Cargo.lock"
+            git commit -m "${TAG}: busbar pin ${IN_VER:-unchanged} ${IN_SHA:-} and Cargo.toml version ${TAG#v}"
             git push origin HEAD:main
           fi
 

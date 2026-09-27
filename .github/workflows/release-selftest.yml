@@ -10,6 +10,7 @@ on:
     paths:
       - ".github/scripts/next-version.sh"
       - ".github/scripts/repin-busbar.sh"
+      - ".github/scripts/stamp-version.sh"
       - ".github/workflows/release-selftest.yml"
       - ".github/workflows/release-on-upstream.yml"
 
@@ -21,6 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the repo's own tags, for the "this repo, today" assertion
       - name: version-compute self-test (no publish)
         run: |
           set -euo pipefail
@@ -55,7 +58,30 @@ jobs:
           got="$(cd "$work" && INPUT_VERSION=v3.4.5 bash "$script")"
           assert_eq "$got" "v3.4.5" "explicit version with leading v"
 
-          echo "all version-compute self-tests passed (no-prior-tag AND has-prior-tag)"
+          # ── the crate's declared version (root Cargo.toml [package]) ──────────
+          # The next tag is the greater of the tag bump and Cargo.toml, so it is above every tag
+          # and never below what the crate declares (the v2.0.8-vs-2.0.22 split this repo had).
+          printf '[package]\nname = "x"\nversion = "1.2.30"\n\n[dependencies]\nfoo = { version = "9.9.9" }\n' > "$work/Cargo.toml"
+          got="$(cd "$work" && bash "$script")"
+          assert_eq "$got" "v1.2.30" "declared version above the highest tag wins"
+          git -C "$work" tag v1.2.30
+          got="$(cd "$work" && bash "$script")"
+          assert_eq "$got" "v1.2.31" "declared version already tagged -> patch-bump"
+          printf '[package]\nname = "x"\nversion = "1.0.0"\n' > "$work/Cargo.toml"
+          got="$(cd "$work" && bash "$script")"
+          assert_eq "$got" "v1.2.31" "declared version below the highest tag -> patch-bump"
+          got="$(cd "$work" && INPUT_VERSION=9.0.0 bash "$script")"
+          assert_eq "$got" "v9.0.0" "explicit version still wins"
+          # This repo, today: above every existing tag and not below Cargo.toml.
+          got="$(bash "$script")"
+          latest="$(git tag --list 'v*' | sort -V | tail -1)"
+          declared="v$(awk '/^\[package\]/{p=1; next} /^\[/{p=0} p && /^version *= *"/{gsub(/.*= *"|".*/, ""); print; exit}' Cargo.toml)"
+          [ -z "$latest" ] || [ "$(printf '%s\n%s\n' "$latest" "$got" | sort -V | tail -1)" = "$got" ] && [ "$got" != "$latest" ] \
+            || fail "next tag $got is not above the highest tag $latest"
+          [ "$(printf '%s\n%s\n' "$declared" "$got" | sort -V | tail -1)" = "$got" ] || fail "next tag $got is below Cargo.toml $declared"
+          echo "this repo: next tag $got (highest tag ${latest:-none}, Cargo.toml $declared)"
+
+          echo "all version-compute self-tests passed (no-prior-tag, has-prior-tag, declared Cargo.toml version)"
 
   # The data path release-on-upstream runs on a real cut: repin-busbar.sh moves .busbar-ref, every
   # manifest's busbar git `rev` and Cargo.lock together. Proven on a scratch copy by moving the pin
@@ -86,6 +112,20 @@ jobs:
           grep -q "usage: repin-busbar.sh" <<<"$out" || fail "empty version refused for the wrong reason: $out"
           git diff --exit-code || fail "a refused repin wrote files"
 
+          # --decide (release-on-upstream's "did upstream move?"), against the recorded pin:
+          #   same version + same sha -> skip; same version + DIFFERENT sha -> cut (the upstream
+          #   release commit moved under an unchanged version string); newer version -> cut;
+          #   older version / no incoming version / same version with no sha -> skip.
+          decide() { bash "$script" --decide "$1" "$2" 2>/dev/null; }
+          [ "$(decide "$pin" "$ver")" = skip ]       || fail "same version + same sha must skip"
+          [ "$(decide "$parent" "$ver")" = cut ]     || fail "same version + different sha must cut"
+          [ "$(decide "$parent" "v$ver")" = cut ]    || fail "a leading v must not hide a moved commit"
+          [ "$(decide "" "$ver")" = skip ]           || fail "same version with no incoming sha must skip"
+          [ "$(decide "$parent" "999.0.0")" = cut ]  || fail "a newer version must cut"
+          [ "$(decide "$parent" "0.0.1")" = skip ]   || fail "an older version must skip"
+          [ "$(decide "$parent" "")" = skip ]        || fail "no incoming version must skip"
+          if bash "$script" --decide "${parent:0:9}" "$ver" >/dev/null 2>&1; then fail "--decide accepted a short sha"; fi
+
           # The recorded pin is a fixed point.
           bash "$script" "$pin" "$ver"
           git diff --exit-code || fail "re-pinning to the recorded rev changed files"
@@ -100,4 +140,4 @@ jobs:
           # And back: byte-identical to the committed tree.
           bash "$script" "$pin" "$ver"
           git diff --exit-code || fail "moving the pin away and back is not a round trip"
-          echo "repin self-test passed (refusals, fixed point, real move, round trip)"
+          echo "repin self-test passed (decide: same-version moved commit cuts, same commit skips; refusals, fixed point, real move, round trip)"
