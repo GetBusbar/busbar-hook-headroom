@@ -24,14 +24,14 @@ serde_json = "1"
 # it as `busbar_contract::abi::sdk`, so the hook trait, the export macro and the hook shapes all come
 # from here). A git dependency on GetBusbar/busbar pinned to the rev in `.busbar-ref` field 1; a busbar
 # build that links this crate `[patch]`es the busbar git source to its own tree, so ONE copy links.
-busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "8b7b6473f47f8d37ae60839c74cfe6a9b64a1dc9" }
+busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "7a5b429041752e00375e120ab1547a8928c3dee4" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
 # The REAL loader (dev-only, never in the shipped artifact): the e2e and the linked/dropped-in
 # conformance tests open the built cdylib through it. Same pinned rev as busbar-contract above, so one
 # busbar source resolves.
-busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "8b7b6473f47f8d37ae60839c74cfe6a9b64a1dc9" }
+busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "7a5b429041752e00375e120ab1547a8928c3dee4" }
 # Dev-only: the real-admin-API e2e test builds+drives an actual `busbar` process over HTTP (install
 # a signed plugin tarball via POST /api/v1/admin/plugins, mint a key, drive a real chat completion)
 # — a blocking client keeps that test synchronous, no tokio runtime needed. Same major version

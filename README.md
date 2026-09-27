@@ -1,4 +1,14 @@
-# headroom-hook
+<!-- fleet:header:begin (rendered by `cargo xtask fleet render` from GetBusbar/busbar's plugins.yaml; edit it there) -->
+# busbar-hook-headroom
+
+Compresses LLM chat history with the real headroom-core BM25 TextCrusher engine as a prompt:rw rewrite gate: a busbar first-party kind:hook plugin (dlopen cdylib).
+
+| kind | alias | crate | busbar | license |
+|---|---|---|---|---|
+| `hook` | `headroom` | `headroom-hook` | 1.6.0 (pinned in `.busbar-ref`) | Apache-2.0 |
+
+[![ci](https://github.com/GetBusbar/busbar-hook-headroom/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/GetBusbar/busbar-hook-headroom/actions/workflows/ci.yml)
+<!-- fleet:header:end -->
 
 [![Coverage](https://codecov.io/gh/GetBusbar/busbar-hook-headroom/branch/dev/graph/badge.svg)](https://codecov.io/gh/GetBusbar/busbar-hook-headroom)
 

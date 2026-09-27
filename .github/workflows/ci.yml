@@ -1,158 +1,24 @@
-# headroom-hook CI — fmt, clippy, build, test, the linked + dropped-in conformance, and the
-# real-binary admin-API e2e, against the busbar rev this repo PINS.
-#
-# This repo builds standalone: its only busbar dependency (busbar-contract, and busbar-plugin-loader
-# dev-only for the loader-seam and conformance tests) is a `git` dependency on
-# https://github.com/GetBusbar/busbar at the rev in field 1 of `.busbar-ref`. No path dependency — so
-# what CI proves is exactly what a busbar build that pulls this repo at a pinned rev links.
-#
-# The one test that needs more than the crates is `tests/e2e_admin_api.rs`: it builds the REAL
-# `busbar` and `busbar-plugin-pack` binaries and drives them over HTTP. CI checks busbar out at the
-# SAME pinned rev beside the plugin and hands the test its path (`BUSBAR_CHECKOUT`), so the binary
-# under test is the one the pinned contract belongs to. Under `CI` that test fails, never skips, when
-# the checkout is missing.
-#
-# The moving leg (this repo's `dev` against busbar's `predev`) is busbar's side of the contract.
-#
-# Only this workflow runs on a push to dev/qa/main; release.yml / docker-bundle.yml are tag-triggered
-# or manual (release.yml calls this workflow as its test gate).
+# RENDERED by `cargo xtask fleet render busbar-hook-headroom` from GetBusbar/busbar's plugins.yaml and
+# .github/fleet/ templates; `cargo xtask fleet check` is red on any edit here. The CI itself is
+# busbar's plugin-ci.yml, taken at the busbar commit this repo pins (.busbar-ref).
 name: ci
 
 on:
   push:
-    branches: [main, dev, qa]
+    branches: [dev, qa, main]
   pull_request:
-    branches: [main, dev, qa]
+    branches: [dev, qa, main]
   workflow_dispatch: {}
-  # release.yml's `gate` runs THIS workflow on the tagged commit, so a release is gated by exactly the
-  # suite (pin check, fmt, clippy, build, test, conformance, e2e) every dev push runs — at the same pin.
-  workflow_call: {}
 
 permissions:
   contents: read
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
-  pin:
-    name: the busbar pin is one rev
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # Every `rev = "..."` on the busbar git source is field 1 of `.busbar-ref`. Two revs would link
-      # two copies of the contract; a rev that disagrees with `.busbar-ref` makes the pin a lie about
-      # what the release builds against.
-      - name: every busbar git dependency names the .busbar-ref rev
-        run: |
-          set -euo pipefail
-          pin=$(awk '{print $1; exit}' .busbar-ref)
-          [[ "$pin" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::.busbar-ref field 1 is not a full sha: '$pin'"; exit 1; }
-          found=$(grep -hoE 'git = "https://github.com/GetBusbar/busbar", rev = "[0-9a-f]+"' Cargo.toml | grep -oE '[0-9a-f]{40}' | sort -u)
-          [ -n "$found" ] || { echo "::error::no busbar git dependency found"; exit 1; }
-          if [ "$found" != "$pin" ]; then
-            echo "::error::busbar revs in Cargo.toml ($found) != .busbar-ref ($pin)"; exit 1
-          fi
-          if grep -nE 'path = "\.\./' Cargo.toml; then
-            echo "::error::Cargo.toml names a sibling-checkout path dependency"; exit 1
-          fi
-          if grep -nE '^(busbar-api|busbar-plugin-sdk|busbar-plugin-sign) *=' Cargo.toml; then
-            echo "::error::a retired busbar crate is named; a plugin's busbar closure is busbar-contract (#40)"; exit 1
-          fi
-          echo "pinned busbar rev: $pin"
-
-  build-test:
-    name: fmt, clippy, build, test, conformance, e2e [${{ matrix.os }}]
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          path: plugin
-      - name: Read the busbar pin
-        id: pin
-        run: echo "sha=$(awk '{print $1; exit}' plugin/.busbar-ref)" >> "$GITHUB_OUTPUT"
-      # The busbar checkout the admin-API e2e builds its real binaries from, at the pinned rev.
-      - name: Checkout busbar at the pinned rev
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          repository: GetBusbar/busbar
-          ref: ${{ steps.pin.outputs.sha }}
-          path: busbar
-      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-        with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            plugin
-            busbar -> ../busbar-target
-          key: ${{ steps.pin.outputs.sha }}
-      - name: fmt
-        working-directory: plugin
-        run: cargo fmt --all -- --check
-      - name: clippy
-        working-directory: plugin
-        run: cargo clippy --all-targets --locked -- -D warnings
-      - name: build (the rlib a busbar build links, and the cdylib a signed tarball carries)
-        working-directory: plugin
-        run: cargo build --locked
-      - name: test (unit, loader seam, linked/dropped-in conformance, real-binary admin-API e2e)
-        working-directory: plugin
-        env:
-          BUSBAR_CHECKOUT: ${{ github.workspace }}/busbar
-          BUSBAR_TARGET_DIR: ${{ github.workspace }}/busbar-target
-          # The e2e's nested busbar release build: LTO off and 16 codegen units bound the runner
-          # time; they change how the binary is optimised, never what it does.
-          CARGO_PROFILE_RELEASE_LTO: "off"
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
-        run: cargo test --locked
-
-  # coverage — INFORMATIONAL ONLY, never a gate: nothing `needs:` it and its failure is not a
-  # correctness signal (`build-test` is). Same layout as `build-test`; instruments the plugin with
-  # cargo-llvm-cov and uploads lcov to Codecov. `--ignore-run-fail` so an instrumentation flake never
-  # blocks the upload.
-  coverage:
-    name: coverage (llvm-cov · codecov)
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    continue-on-error: true
-    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          path: plugin
-      - name: Read the busbar pin
-        id: pin
-        run: echo "sha=$(awk '{print $1; exit}' plugin/.busbar-ref)" >> "$GITHUB_OUTPUT"
-      - name: Checkout busbar at the pinned rev
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          repository: GetBusbar/busbar
-          ref: ${{ steps.pin.outputs.sha }}
-          path: busbar
-      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-        with:
-          components: llvm-tools-preview
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-      - name: Collect coverage
-        working-directory: plugin
-        env:
-          BUSBAR_CHECKOUT: ${{ github.workspace }}/busbar
-          BUSBAR_TARGET_DIR: ${{ github.workspace }}/busbar-target
-          CARGO_PROFILE_RELEASE_LTO: "off"
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
-        run: cargo llvm-cov --locked --ignore-run-fail --lcov --output-path lcov.info
-      - name: Upload to Codecov (never fails the build)
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: plugin/lcov.info
-          slug: GetBusbar/busbar-hook-headroom
-          fail_ci_if_error: false
+  ci:
+    uses: GetBusbar/busbar/.github/workflows/plugin-ci.yml@7a5b429041752e00375e120ab1547a8928c3dee4
+    with:
+      service: none
+      busbar_checkout: true
+      macos_test: "cargo test --workspace --locked"
+      extra_test: ""
+    secrets: inherit
