@@ -15,7 +15,7 @@
 # The moving leg (this repo's `dev` against busbar's `predev`) is busbar's side of the contract.
 #
 # Only this workflow runs on a push to dev/qa/main; release.yml / docker-bundle.yml are tag-triggered
-# or manual.
+# or manual (release.yml calls this workflow as its test gate).
 name: ci
 
 on:
@@ -24,6 +24,9 @@ on:
   pull_request:
     branches: [main, dev, qa]
   workflow_dispatch: {}
+  # release.yml's `gate` runs THIS workflow on the tagged commit, so a release is gated by exactly the
+  # suite (pin check, fmt, clippy, build, test, conformance, e2e) every dev push runs — at the same pin.
+  workflow_call: {}
 
 permissions:
   contents: read

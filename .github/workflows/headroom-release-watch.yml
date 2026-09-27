@@ -30,20 +30,19 @@ permissions:
 env:
   UPSTREAM: headroomlabs-ai/headroom
   FLOOR: v0.31.0
-  # Same BUSBAR_REF convention ci.yml/release.yml use for the sibling path dependency this crate
-  # needs (busbar-plugin-sdk) — see the sibling-checkout step below for why it's required at all.
-  BUSBAR_REF: dev
 
 jobs:
   watch:
     runs-on: ubuntu-latest
     steps:
-      # headroom-hook's Cargo.toml declares busbar-plugin-sdk as `path = "../busbar/crates/..."`,
-      # a sibling-relative path, so whatever checks this repo out MUST also check out a real
-      # `busbar` as an actual filesystem sibling or `cargo build`/`cargo test` below cannot
-      # resolve it. Both repos therefore go into explicit sibling paths under the workspace,
-      # matching release.yml's layout, and every later step runs with
-      # `working-directory: headroom-hook` rather than the workspace root.
+      # busbar 1.6.0: headroom-hook's only busbar dependency is busbar-contract (busbar-plugin-loader
+      # dev-only), a `git` dependency at the rev in `.busbar-ref` field 1 — cargo resolves it with no
+      # busbar checkout at all. A busbar checkout AT THAT SAME REV is still made beside this repo,
+      # for one test: tests/e2e_admin_api.rs builds the REAL busbar + busbar-plugin-pack binaries
+      # from it (`BUSBAR_CHECKOUT`) and, under `CI`, fails rather than skips without it — the same
+      # layout ci.yml uses. (Until 1.6.0 this job checked busbar's `dev` out as a sibling PATH
+      # dependency for busbar-plugin-sdk; the manifest moved to `../busbar` while main's copy of this
+      # file still checked out `busbarAI`, so every scheduled bump failed to resolve plugin-sdk.)
       - name: Checkout headroom-hook
         uses: actions/checkout@v4
         with:
@@ -51,14 +50,20 @@ jobs:
           path: headroom-hook
           fetch-depth: 0
 
-      - name: Checkout busbar (sibling path dependency)
+      - name: Resolve busbar ref from .busbar-ref
+        id: ref
+        run: echo "sha=$(cut -d' ' -f1 headroom-hook/.busbar-ref)" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - name: Checkout busbar at the pin (the real binaries the admin-API e2e drives)
         uses: actions/checkout@v4
         with:
           repository: GetBusbar/busbar
-          ref: ${{ env.BUSBAR_REF }}
+          ref: ${{ steps.ref.outputs.sha }}
           path: busbar
 
-      - uses: dtolnay/rust-toolchain@stable
+      # The toolchain rust-toolchain.toml pins (1.98.0).
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
 
       - name: Resolve latest upstream release + current pin
         id: resolve
@@ -86,6 +91,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           LATEST: ${{ steps.resolve.outputs.latest }}
+          # The admin-API e2e's busbar checkout (at the pin) and its nested release build's knobs,
+          # exactly as ci.yml sets them.
+          BUSBAR_CHECKOUT: ${{ github.workspace }}/busbar
+          BUSBAR_TARGET_DIR: ${{ github.workspace }}/busbar-target
+          CARGO_PROFILE_RELEASE_LTO: "off"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: |
           set -euo pipefail
           # Re-pin headroom-core to the new release TAG (drops any rev pin), keeping default-features = false.
@@ -123,7 +134,7 @@ jobs:
           #
           # The `cargo build`/`cargo test` above are NOT a substitute. They run in this workflow's
           # own environment and exercise the crate alone; `ci.yml` runs the plugin over the real
-          # dlopen ABI seam against a sibling busbar checkout, on the full target matrix. Only the
+          # dlopen ABI seam against the pinned busbar contract, on the full target matrix. Only the
           # second one is the gate this repo actually relies on.
           #
           # WHEN THIS ACTUALLY TAKES EFFECT: this workflow is `on: schedule`, and GitHub loads a

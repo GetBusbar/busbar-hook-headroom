@@ -3,10 +3,17 @@
 # On an upstream-release dispatch (or daily self-heal cron, or a manual run) this compares the
 # incoming busbar version against the version recorded in .busbar-ref (field 2) and cuts ONLY when
 # the incoming version is strictly newer (sort -V). A same-version core re-tag is a clean no-op:
-# no commit, no tag. On a real cut it overwrites .busbar-ref with "<new-sha> <new-version>" — a
-# PLAIN data file the RELEASE_DISPATCH_TOKEN can push, unlike release.yml which is a workflow file
-# the PAT is refused (GH013) — patch-bumps THIS repo's own v* tag, and pushes it, firing release.yml
-# (build + sign + publish). No plain `push:` trigger, so merging this file cannot itself cut a
+# no commit, no tag. On a real cut it MOVES THE PIN with .github/scripts/repin-busbar.sh — .busbar-ref
+# becomes "<new-sha> <new-version>", every manifest's busbar-contract git `rev` becomes <new-sha>,
+# and Cargo.lock re-resolves that one source (busbar 1.6.0: the plugin builds against the contract by
+# git rev, so the record and the manifests must move together or ci.yml's `pin` job refuses the
+# release). All PLAIN data files the RELEASE_DISPATCH_TOKEN can push, unlike release.yml which is a
+# workflow file the PAT is refused (GH013). It then patch-bumps THIS repo's own v* tag, and pushes
+# it, firing release.yml (build + sign + publish).
+#
+# dry_run (workflow_dispatch) checks out the DISPATCHED ref instead of main, computes the next tag,
+# and runs the repin script against the recorded pin (must be a no-op), so the whole data path is
+# exercised on a branch without a commit, a tag or a publish. No plain `push:` trigger, so merging this file cannot itself cut a
 # release. Pushes use RELEASE_DISPATCH_TOKEN (bypass-capable) as busbar-bot.
 name: release-on-upstream
 
@@ -39,10 +46,10 @@ jobs:
   cut:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout main (bypass-capable token, full history + tags)
+      - name: Checkout main (bypass-capable token, full history + tags; the dispatched ref on dry_run)
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.event.inputs.dry_run == 'true' && github.ref || 'main' }}
           fetch-depth: 0
           persist-credentials: true
           token: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
@@ -156,7 +163,20 @@ jobs:
             *) echo "::error::dry-run: ${TAG} is not a valid semver tag"; exit 1 ;;
           esac
 
-      - name: Record the new busbar ref in .busbar-ref
+      # cargo re-resolves the busbar git source in Cargo.lock; the toolchain rust-toolchain.toml pins.
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+        if: steps.resolve.outputs.should_cut == 'yes'
+
+      - name: Dry-run — the repin path against the recorded pin (must change nothing)
+        if: steps.resolve.outputs.should_cut == 'yes' && github.event.inputs.dry_run == 'true'
+        run: |
+          set -euo pipefail
+          bash .github/scripts/repin-busbar.sh "$(cut -d' ' -f1 .busbar-ref)" "$(cut -d' ' -f2 .busbar-ref)"
+          git diff --exit-code -- .busbar-ref Cargo.lock ':(glob)**/Cargo.toml' \
+            || { echo "::error::dry-run: re-pinning to the recorded rev changed files"; exit 1; }
+          echo "dry-run OK: repin-busbar.sh is a no-op at the recorded pin"
+
+      - name: Move the busbar pin (.busbar-ref + manifests + Cargo.lock)
         if: steps.guard.outputs.exists == 'no' && steps.resolve.outputs.in_sha != '' && github.event.inputs.dry_run != 'true'
         env:
           TAG: ${{ steps.ver.outputs.tag }}
@@ -164,12 +184,12 @@ jobs:
           IN_VER: ${{ steps.resolve.outputs.in_ver }}
         run: |
           set -euo pipefail
-          printf '%s %s\n' "${IN_SHA}" "${IN_VER}" > .busbar-ref
-          if git diff --quiet .busbar-ref; then
-            echo "::notice::.busbar-ref already at ${IN_SHA} ${IN_VER}, no commit needed"
+          bash .github/scripts/repin-busbar.sh "${IN_SHA}" "${IN_VER}"
+          if git diff --quiet; then
+            echo "::notice::busbar pin already at ${IN_SHA} ${IN_VER}, no commit needed"
           else
-            git add .busbar-ref
-            git commit -m ".busbar-ref: record busbar ${IN_VER} (${IN_SHA}) for the ${TAG} release"
+            git add -u
+            git commit -m "busbar pin: ${IN_VER} (${IN_SHA}) for the ${TAG} release — .busbar-ref, manifests, Cargo.lock"
             git push origin HEAD:main
           fi
 

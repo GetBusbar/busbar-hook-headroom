@@ -11,9 +11,11 @@ name: Docker (bundle)
 #     — DEPRECATED, see those files' headers: they describe a retired Unix-socket transport this
 #     repo no longer builds a binary for (headroom-hook is a dlopen cdylib only, no `fn main`).
 #
-# busbar itself is built FROM SOURCE from a sibling ../busbar checkout in this same CI run —
-# this repo already declares busbar as a path dependency for busbar-plugin-sdk (see Cargo.toml),
-# so the sibling-checkout layout is already the convention. The build matches busbar's own image
+# busbar itself is built FROM SOURCE from a busbar checkout AT THE REV IN `.busbar-ref` field 1 —
+# the same rev every busbar git dependency in Cargo.toml names (busbar 1.6.0: this plugin depends on
+# busbar-contract alone, by git rev; ci.yml's `pin` job refuses a manifest that disagrees). So the
+# engine in the image speaks exactly the contract the bundled cdylib was compiled against; a moving
+# busbar branch could pair the plugin with an engine of a different ABI. The build matches busbar's own image
 # build for the same targets: same PGO-mandatory fail-closed release build, same musl-native
 # `rust:alpine` container trick, exact-ABI-matched runtime libs extracted from the same container
 # so dlopen() succeeds in a FROM-scratch image with no libc at all.
@@ -47,9 +49,6 @@ on:
 
 env:
   DOCKERHUB_IMAGE: getbusbar/busbar-headroom
-  # Ref for the sibling busbar checkout (source of the busbar binary this image bundles).
-  # `main` is busbar's release branch (matches the convention: main = release-only).
-  BUSBAR_REF: main
 
 permissions:
   contents: read
@@ -79,27 +78,22 @@ jobs:
         with:
           path: headroom-hook
 
-      - name: Checkout busbar (sibling — source of the busbar binary)
+      - name: Resolve busbar ref from .busbar-ref
+        id: ref
+        run: echo "sha=$(cut -d' ' -f1 headroom-hook/.busbar-ref)" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      # Source of the bundled busbar binary and the packer, at the pin the cdylib builds against.
+      # The cdylib itself resolves busbar-contract from git at the same rev (no path dependency).
+      - name: Checkout busbar at the pin (source of the busbar binary)
         uses: actions/checkout@v4
         with:
-          # The core repo is GetBusbar/busbar (renamed from busbar), which is what every
-          # other workflow here (release.yml, headroom-release-watch.yml) checks out too.
           repository: GetBusbar/busbar
-          ref: ${{ env.BUSBAR_REF }}
+          ref: ${{ steps.ref.outputs.sha }}
           path: busbar
 
-      # Tolerates a checkout whose Cargo.toml still carries an absolute local path for
-      # busbar-plugin-sdk (and its dev-dependency) instead of the sibling-relative
-      # `../busbar/crates/...` form, rewriting it to the layout this job checks out. A no-op
-      # once every branch built here uses the relative form; drop the step then.
-      - name: Patch headroom-hook's interim path dependencies for CI
-        run: |
-          set -euo pipefail
-          sed -i.bak -E 's#path = "[^"]*/busbar/crates#path = "../busbar/crates#g' headroom-hook/Cargo.toml
-          rm -f headroom-hook/Cargo.toml.bak
-          grep 'path = "\.\./busbar' headroom-hook/Cargo.toml
-
-      - uses: dtolnay/rust-toolchain@stable
+      # The toolchain rust-toolchain.toml pins (both repos name 1.98.0).
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -112,23 +106,25 @@ jobs:
       # workspace cannot always write through. Ordering it first sidesteps that entirely.
       - name: Build busbar-plugin-pack (host target, build tool only)
         working-directory: busbar
-        run: cargo build --release -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
+        run: cargo build --release --locked -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
 
       # scripts/pgo-build.sh sets RUSTFLAGS itself for both of its cargo phases, and a RUSTFLAGS
       # set in the environment would simply be overridden by it (cargo gives the env var
       # precedence over config-file rustflags, and the script's own assignment wins over ours).
       # busbar has to be built with crt-static DISABLED here (see the next step for why), so the
-      # script is patched to append an opt-in extra-flags variable to both phases. The patch is
-      # asserted to have applied, so an upstream rewording of those lines fails the build loudly
-      # instead of silently producing a static binary that cannot dlopen anything.
+      # script is patched to append an opt-in extra-flags variable to both phases. The match is on
+      # the flag's PREFIX (`RUSTFLAGS="-Cprofile-generate=$PROF_DIR` / `...-use=$MERGED`), so the
+      # 1.6.0 script's trailing `${LSE_FLAG:+ ...}` / `${EMIT_RELOCS:+ ...}` riders are kept. The
+      # patch is asserted to have applied, so an upstream rewording of those lines fails the build
+      # loudly instead of silently producing a static binary that cannot dlopen anything.
       - name: Let scripts/pgo-build.sh accept extra RUSTFLAGS
         working-directory: busbar
         run: |
           set -euo pipefail
           # shellcheck disable=SC2016  # the $-expressions are what we are WRITING into the script
           sed -i \
-            -e 's|RUSTFLAGS="-Cprofile-generate=$PROF_DIR"|RUSTFLAGS="-Cprofile-generate=$PROF_DIR ${PGO_EXTRA_RUSTFLAGS:-}"|' \
-            -e 's|RUSTFLAGS="-Cprofile-use=$MERGED"|RUSTFLAGS="-Cprofile-use=$MERGED ${PGO_EXTRA_RUSTFLAGS:-}"|' \
+            -e 's|RUSTFLAGS="-Cprofile-generate=$PROF_DIR|RUSTFLAGS="-Cprofile-generate=$PROF_DIR ${PGO_EXTRA_RUSTFLAGS:-}|' \
+            -e 's|RUSTFLAGS="-Cprofile-use=$MERGED|RUSTFLAGS="-Cprofile-use=$MERGED ${PGO_EXTRA_RUSTFLAGS:-}|' \
             scripts/pgo-build.sh
           n="$(grep -c 'PGO_EXTRA_RUSTFLAGS' scripts/pgo-build.sh)"
           if [ "$n" -ne 2 ]; then
@@ -138,7 +134,7 @@ jobs:
           grep -n 'RUSTFLAGS=' scripts/pgo-build.sh
 
       # ONE musl-native `rust:alpine` container builds BOTH halves of this image: busbar itself
-      # (PGO, from the sibling busbar checkout) and this repo's headroom cdylib. They used to be
+      # (PGO, from the pinned busbar checkout) and this repo's headroom cdylib. They used to be
       # built separately, busbar on the Ubuntu host against `musl-tools` and the cdylib in Alpine,
       # and that split was the reason this image never worked:
       #
@@ -192,7 +188,7 @@ jobs:
               cp target/pgo/release/busbar /bb/busbar
               cp target/pgo/release/busbar.pgo-verified /bb/busbar.pgo-verified
               cd /src/headroom-hook
-              RUSTFLAGS="-C target-feature=-crt-static" cargo build --release
+              RUSTFLAGS="-C target-feature=-crt-static" cargo build --release --locked --lib -p headroom-hook
               cp target/release/libheadroom_hook.so /libs/libheadroom_hook.so
               cp /usr/lib/libstdc++.so.6 /usr/lib/libgcc_s.so.1 /libs/
               # BOTH musl names as REAL files: ld-musl-<arch>.so.1 is busbar PT_INTERP (without it

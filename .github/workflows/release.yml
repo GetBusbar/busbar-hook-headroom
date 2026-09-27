@@ -4,9 +4,14 @@
 #
 # This mirrors busbar/.github/workflows/release.yml's `auth-plugins` job (and the identical
 # pattern GetBusbar/auth-oidc and GetBusbar/webrequest-hook use) — same 5-target matrix, same
-# busbar-plugin-pack pack/sign step (built from a sibling busbar checkout), same
-# BUSBAR_SIGN_KEY-or-`--allow-unsigned` fallback, same `gh release upload` + build-provenance
-# attestation — just scoped to this one plugin.
+# busbar-plugin-pack pack/sign step, same BUSBAR_SIGN_KEY-or-`--allow-unsigned` fallback, same
+# `gh release upload` + build-provenance attestation — just scoped to this one plugin.
+#
+# CONTRACT-ONLY BUILD (busbar 1.6.0). The cdylib's one busbar dependency is busbar-contract, a `git`
+# dependency on GetBusbar/busbar at the rev in `.busbar-ref` field 1 (ci.yml's `pin` job refuses a
+# manifest that disagrees). The plugin builds standalone with `--locked`; the busbar checkout at that
+# same rev exists ONLY to build the packer (busbar-plugin-pack, from busbar-plugin-loader) — nothing
+# in this repo's build reaches into it by path.
 #
 # REPLACES the old `release-headroom` workflow, which built a standalone binary for the
 # RETIRED Unix-socket transport (`headroom-hook` executable, triggered by a `headroom-v*` tag).
@@ -65,15 +70,15 @@ jobs:
         run: echo "sha=$(cut -d' ' -f1 .busbar-ref)" >> "$GITHUB_OUTPUT"
         shell: bash
 
+  # This repo's OWN ci.yml, on the tagged commit: its `pin` job proves every busbar git rev in
+  # Cargo.toml IS `.busbar-ref` field 1, then fmt/clippy/build/test, the linked + dropped-in
+  # conformance and the real-binary admin-API e2e run against that rev. (busbar's shared
+  # plugin-ci.yml assumed a sibling path checkout of the retired plugin-sdk and cannot build a
+  # contract-only plugin.)
   gate:
     needs: resolve-busbar-ref
-    uses: GetBusbar/busbar/.github/workflows/plugin-ci.yml@dev
-    with:
-      plugin_crate: headroom-hook
-      plugin_kind: hook
-      plugin_alias: headroom
-      service: none
-      busbar_ref: ${{ needs.resolve-busbar-ref.outputs.sha }}
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
 
   # Create the Release first so the parallel per-target upload jobs have something to attach to
   # (uploading from a matrix without a pre-existing release races -> "release not found").
@@ -138,37 +143,34 @@ jobs:
         run: echo "sha=$(cut -d' ' -f1 headroom-hook/.busbar-ref)" >> "$GITHUB_OUTPUT"
         shell: bash
 
-      - name: Checkout busbar (sibling path dependency)
+      # Source of the packer only; the plugin itself resolves busbar-contract from git at this rev.
+      - name: Checkout busbar at the pin (builds busbar-plugin-pack)
         uses: actions/checkout@v7
         with:
           repository: GetBusbar/busbar
           ref: ${{ steps.ref.outputs.sha }}
           path: busbar
 
-      # Normalizes whatever busbar path this checkout's Cargo.toml carries onto the
-      # sibling-relative form this job's layout produces. A no-op when the manifest already uses
-      # `../busbar/crates/...`; .github/workflows/docker-bundle.yml carries the same step.
-      - name: Patch headroom-hook's interim path dependencies for CI
-        shell: bash
-        run: |
-          set -euo pipefail
-          sed -i.bak -E 's#path = "[^"]*/busbar/crates#path = "../busbar/crates#g' headroom-hook/Cargo.toml
-          rm -f headroom-hook/Cargo.toml.bak
-          grep 'path = "\.\./busbar' headroom-hook/Cargo.toml
-
-      - uses: dtolnay/rust-toolchain@stable
+      # The toolchain rust-toolchain.toml pins (both repos name 1.98.0). A floating `@stable` would
+      # install the target on a toolchain rustup then ignores in favour of the pinned one.
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            headroom-hook
+            busbar
 
-      - name: Build the headroom-hook plugin cdylib
+      - name: Build the headroom-hook plugin cdylib (busbar-contract from git at .busbar-ref)
         working-directory: headroom-hook
-        run: cargo build --release --lib --target ${{ matrix.target }}
+        run: cargo build --release --locked --lib --target ${{ matrix.target }} -p headroom-hook
         shell: bash
 
-      - name: Build busbar-plugin-pack (from the sibling busbar checkout)
+      # Host build: the packer only reads the cdylib's bytes, so it need not match the plugin target.
+      - name: Build busbar-plugin-pack (from the pinned busbar checkout)
         working-directory: busbar
-        run: cargo build --release --target ${{ matrix.target }} -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
+        run: cargo build --release --locked -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
         shell: bash
 
       - name: Package + sign the plugin tarball
@@ -179,8 +181,8 @@ jobs:
           ver="${GITHUB_REF_NAME#v}"
           target="${{ matrix.target }}"
           outdir="plugin-dist"; mkdir -p "$outdir"
-          pack="busbar/target/${target}/release/busbar-plugin-pack"
-          [ -x "$pack" ] || pack="busbar/target/${target}/release/busbar-plugin-pack.exe"
+          pack="busbar/target/release/busbar-plugin-pack"
+          [ -x "$pack" ] || pack="busbar/target/release/busbar-plugin-pack.exe"
           unsigned_flag=""
           if [ -z "${BUSBAR_SIGN_KEY:-}" ]; then
             echo "::warning::BUSBAR_SIGN_KEY secret is not provisioned — packaging an UNSIGNED plugin tarball (loadable only under plugins.trust.allow_unsigned). See busbar's release.yml TODO(release-keys) seam."

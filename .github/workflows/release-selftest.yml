@@ -9,6 +9,7 @@ on:
   push:
     paths:
       - ".github/scripts/next-version.sh"
+      - ".github/scripts/repin-busbar.sh"
       - ".github/workflows/release-selftest.yml"
       - ".github/workflows/release-on-upstream.yml"
 
@@ -55,3 +56,48 @@ jobs:
           assert_eq "$got" "v3.4.5" "explicit version with leading v"
 
           echo "all version-compute self-tests passed (no-prior-tag AND has-prior-tag)"
+
+  # The data path release-on-upstream runs on a real cut: repin-busbar.sh moves .busbar-ref, every
+  # manifest's busbar git `rev` and Cargo.lock together. Proven on a scratch copy by moving the pin
+  # to the pinned commit's PARENT (a real busbar commit that exists on GitHub) and back — nothing is
+  # committed or pushed.
+  repin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: repin self-test (no commit, no push)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+          script=.github/scripts/repin-busbar.sh
+          pin="$(cut -d' ' -f1 .busbar-ref)"; ver="$(cut -d' ' -f2 .busbar-ref)"
+          parent="$(gh api "repos/GetBusbar/busbar/commits/${pin}" --jq '.parents[0].sha')"
+          [[ "$parent" =~ ^[0-9a-f]{40}$ ]] || fail "could not resolve the pin's parent commit"
+
+          # RED arms: a short sha and a missing version are refused, by name, before anything is
+          # written. (Output captured so the expected refusal is not raised as a run annotation.)
+          if out="$(bash "$script" "${pin:0:9}" "$ver" 2>&1)"; then fail "a short sha was accepted"; fi
+          grep -q "is not a full 40-hex busbar sha" <<<"$out" || fail "short sha refused for the wrong reason: $out"
+          if out="$(bash "$script" "$pin" "" 2>&1)"; then fail "an empty version was accepted"; fi
+          grep -q "usage: repin-busbar.sh" <<<"$out" || fail "empty version refused for the wrong reason: $out"
+          git diff --exit-code || fail "a refused repin wrote files"
+
+          # The recorded pin is a fixed point.
+          bash "$script" "$pin" "$ver"
+          git diff --exit-code || fail "re-pinning to the recorded rev changed files"
+
+          # A real move: record, manifests and lock all name the new rev, and nothing else moved.
+          bash "$script" "$parent" "$ver"
+          [ "$(cut -d' ' -f1 .busbar-ref)" = "$parent" ] || fail ".busbar-ref did not move"
+          ! grep -rq --include=Cargo.toml "$pin" . || fail "a manifest still names the old rev"
+          ! grep -q "$pin" Cargo.lock || fail "Cargo.lock still names the old rev"
+          git diff --name-only | grep -vE '(^|/)Cargo\.(toml|lock)$|^\.busbar-ref$' && fail "repin touched a file outside the pin" || true
+
+          # And back: byte-identical to the committed tree.
+          bash "$script" "$pin" "$ver"
+          git diff --exit-code || fail "moving the pin away and back is not a round trip"
+          echo "repin self-test passed (refusals, fixed point, real move, round trip)"
