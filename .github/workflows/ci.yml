@@ -154,5 +154,5 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: plugin/lcov.info
-          slug: GetBusbar/headroom-hook
+          slug: GetBusbar/busbar-hook-headroom
           fail_ci_if_error: false

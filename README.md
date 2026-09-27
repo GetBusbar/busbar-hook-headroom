@@ -1,6 +1,6 @@
 # headroom-hook
 
-[![Coverage](https://codecov.io/gh/GetBusbar/headroom-hook/branch/dev/graph/badge.svg)](https://codecov.io/gh/GetBusbar/headroom-hook)
+[![Coverage](https://codecov.io/gh/GetBusbar/busbar-hook-headroom/branch/dev/graph/badge.svg)](https://codecov.io/gh/GetBusbar/busbar-hook-headroom)
 
 **v2.** Compresses LLM chat history inside [busbar](https://getbusbar.com)
 using [headroom](https://github.com/headroomlabs-ai/headroom)'s Rust
@@ -120,7 +120,7 @@ or your own build — install Headroom into it the same way you'd install any ot
 first-party plugin:
 
 1. Grab the signed tarball for your platform from this repo's
-   [Releases](https://github.com/GetBusbar/headroom-hook/releases/latest)
+   [Releases](https://github.com/GetBusbar/busbar-hook-headroom/releases/latest)
    (`busbar-headroom-<version>-<target>.tar.gz` — Linux x86_64/arm64, macOS
    x86_64/arm64, Windows x86_64).
 2. Drop it into busbar's plugin directory and enable plugins in your `config.yaml`:
@@ -169,7 +169,7 @@ is no `[[bin]]`, no standalone executable), which you then sign/pack with busbar
 unsigned in dev mode via `plugins.trust.allow_unsigned`):
 
 ```sh
-git clone https://github.com/GetBusbar/headroom-hook && cd headroom-hook
+git clone https://github.com/GetBusbar/busbar-hook-headroom && cd busbar-hook-headroom
 cargo build --release --lib   # cdylib: target/release/libheadroom_hook.so (.dylib/.dll elsewhere)
 ```
 

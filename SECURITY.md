@@ -6,7 +6,7 @@
 requests, or discussions.**
 
 Instead, report privately through GitHub's
-[private vulnerability reporting](https://github.com/GetBusbar/headroom-hook/security/advisories/new)
+[private vulnerability reporting](https://github.com/GetBusbar/busbar-hook-headroom/security/advisories/new)
 (the **Security** tab on the repository). Please include a description of the
 issue and its impact, the steps to reproduce, and any relevant configuration.
 

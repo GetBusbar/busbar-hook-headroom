@@ -390,7 +390,7 @@ jobs:
             org.opencontainers.image.title=busbar-headroom
             org.opencontainers.image.description=busbar + the headroom-hook prompt-compression plugin, pre-installed and pre-wired — one image, zero plugin setup.
             org.opencontainers.image.url=https://getbusbar.com
-            org.opencontainers.image.documentation=https://github.com/GetBusbar/headroom-hook
+            org.opencontainers.image.documentation=https://github.com/GetBusbar/busbar-hook-headroom
             org.opencontainers.image.licenses=Apache-2.0
 
       # BOOT GATE, and the reason this workflow exists in its current shape. Every previously

@@ -3,7 +3,7 @@
 # THIS repo's own GitHub Release.
 #
 # This mirrors busbar/.github/workflows/release.yml's `auth-plugins` job (and the identical
-# pattern GetBusbar/auth-oidc and GetBusbar/webrequest-hook use) — same 5-target matrix, same
+# pattern GetBusbar/busbar-auth-oidc and GetBusbar/busbar-hook-webrequest use) — same 5-target matrix, same
 # busbar-plugin-pack pack/sign step, same BUSBAR_SIGN_KEY-or-`--allow-unsigned` fallback, same
 # `gh release upload` + build-provenance attestation — just scoped to this one plugin.
 #
