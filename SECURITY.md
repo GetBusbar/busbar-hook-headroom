@@ -12,7 +12,7 @@ issue and its impact, the steps to reproduce, and any relevant configuration.
 
 ## Scope
 
-`headroom-hook` is a rewrite gate that runs on Busbar's normalized request
+`busbar-hook-headroom` is a rewrite gate that runs on Busbar's normalized request
 path. It never holds provider credentials and never terminates client auth —
 Busbar does. The security-relevant surface here is:
 

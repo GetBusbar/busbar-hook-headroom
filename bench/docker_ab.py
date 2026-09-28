@@ -210,7 +210,7 @@ def prep_plugin():
     sh("cargo", "build", "--release", cwd=REPO, quiet=False)
 
     ext = "dylib" if sys.platform == "darwin" else "so"
-    lib = os.path.join(REPO, "target", "release", f"libheadroom_hook.{ext}")
+    lib = os.path.join(REPO, "target", "release", f"libbusbar_hook_headroom.{ext}")
     if not os.path.exists(lib):
         sys.exit(f"expected cdylib not found: {lib} (did the release build produce it?)")
 
@@ -228,10 +228,10 @@ def prep_plugin():
 
     shutil.rmtree(PLUGIN_DIR, ignore_errors=True)
     os.makedirs(PLUGIN_DIR, exist_ok=True)
-    out = os.path.join(PLUGIN_DIR, "busbar-headroom.tar.gz")
+    out = os.path.join(PLUGIN_DIR, "busbar-hook-headroom.tar.gz")
     sh(pack, "pack",
        "--lib", lib,
-       "--name", "busbar-headroom", "--alias", "headroom", "--kind", "hook",
+       "--name", "busbar-hook-headroom", "--alias", "headroom", "--kind", "hook",
        "--version", version, "--publisher", "busbar", "--license", "Apache-2.0",
        "--needs-prompt", "rw", "--allow-unsigned",
        "--out", out,
@@ -286,7 +286,7 @@ def main():
 
     if not args.skip_plugin_build:
         prep_plugin()
-    elif not os.path.exists(os.path.join(PLUGIN_DIR, "busbar-headroom.tar.gz")):
+    elif not os.path.exists(os.path.join(PLUGIN_DIR, "busbar-hook-headroom.tar.gz")):
         sys.exit("--skip-plugin-build given but plugins/busbar-headroom.tar.gz does not exist")
 
     try:

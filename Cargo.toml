@@ -1,5 +1,5 @@
 [package]
-name = "headroom-hook"
+name = "busbar-hook-headroom"
 version = "2.0.22"
 edition = "2024"
 publish = false

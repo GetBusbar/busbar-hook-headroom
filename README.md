@@ -5,7 +5,7 @@ Compresses LLM chat history with the real headroom-core BM25 TextCrusher engine 
 
 | kind | alias | crate | busbar | license |
 |---|---|---|---|---|
-| `hook` | `headroom` | `headroom-hook` | 1.6.0 (pinned in `.busbar-ref`) | Apache-2.0 |
+| `hook` | `headroom` | `busbar-hook-headroom` | 1.6.0 (pinned in `.busbar-ref`) | Apache-2.0 |
 
 [![ci](https://github.com/GetBusbar/busbar-hook-headroom/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/GetBusbar/busbar-hook-headroom/actions/workflows/ci.yml)
 <!-- fleet:header:end -->
@@ -131,7 +131,7 @@ first-party plugin:
 
 1. Grab the signed tarball for your platform from this repo's
    [Releases](https://github.com/GetBusbar/busbar-hook-headroom/releases/latest)
-   (`busbar-headroom-<version>-<target>.tar.gz` — Linux x86_64/arm64, macOS
+   (`busbar-hook-headroom-<version>-<target>.tar.gz` — Linux x86_64/arm64, macOS
    x86_64/arm64, Windows x86_64).
 2. Drop it into busbar's plugin directory and enable plugins in your `config.yaml`:
 
@@ -145,7 +145,7 @@ first-party plugin:
    ```yaml
    hooks:                    # the top-level definition map: the NAME is the instance
      headroom:
-       module: busbar-headroom
+       module: busbar-hook-headroom
        kind: gate
        prompt: rw            # the rewrite grant
        timeout_ms: 25        # ~550 µs typical; 25 ms is generous headroom
@@ -180,7 +180,7 @@ unsigned in dev mode via `plugins.trust.allow_unsigned`):
 
 ```sh
 git clone https://github.com/GetBusbar/busbar-hook-headroom && cd busbar-hook-headroom
-cargo build --release --lib   # cdylib: target/release/libheadroom_hook.so (.dylib/.dll elsewhere)
+cargo build --release --lib   # cdylib: target/release/libbusbar_hook_headroom.so (.dylib/.dll elsewhere)
 ```
 
 ### Settings
@@ -268,7 +268,7 @@ plugins:
 
 hooks:
   headroom:
-    module: busbar-headroom
+    module: busbar-hook-headroom
     kind: gate
     prompt: rw                 # the rewrite grant
     timeout_ms: 25             # ~550 µs typical; 25 ms is generous headroom
@@ -289,7 +289,7 @@ per-pool tokens and latency in `/metrics` or `GET /api/v1/admin/usage`.
 
 ```yaml
 hooks:
-  headroom: { module: busbar-headroom, kind: gate, prompt: rw }
+  headroom: { module: busbar-hook-headroom, kind: gate, prompt: rw }
 
 pools:
   # NB: no `pools.hooks:` here — the all-pools attach would put the gate on both arms.

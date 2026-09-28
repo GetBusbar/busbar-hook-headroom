@@ -39,7 +39,7 @@ models:
 # `global_hooks:` list.
 hooks:
   busbar-headroom:
-    module: busbar-headroom
+    module: busbar-hook-headroom
     kind: gate
     prompt: rw              # the rewrite grant
     timeout_ms: 25

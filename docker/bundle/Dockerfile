@@ -24,10 +24,10 @@
 # dynamic loader in it at all, so dlopen() is a stub that always fails: every version of this
 # bundle built before this change died at boot with
 #
-#   [warn] memfd load unavailable for plugin 'busbar-headroom' (... Dynamic loading not supported)
-#   [error] gate hook 'busbar-headroom' (plugin 'busbar-headroom') failed to open; refusing to
+#   [warn] memfd load unavailable for plugin 'busbar-hook-headroom' (... Dynamic loading not supported)
+#   [error] gate hook 'busbar-hook-headroom' (plugin 'busbar-hook-headroom') failed to open; refusing to
 #           boot/reload with a silently-absent admission gate (fail-closed): failed to load
-#           plugin 'busbar-headroom': Dynamic loading not supported
+#           plugin 'busbar-hook-headroom': Dynamic loading not supported
 #
 # which made THIS IMAGE'S ENTIRE REASON FOR EXISTING non-functional: the whole point of the
 # bundle is that the plugin is pre-loaded. busbar's own getbusbar/busbar image can stay static

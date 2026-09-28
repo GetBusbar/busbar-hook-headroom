@@ -67,7 +67,7 @@ fn plugin_path() -> Option<PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
-        let name = busbar_plugin_loader::plugin_library_filename("headroom_hook");
+        let name = busbar_plugin_loader::plugin_library_filename("busbar_hook_headroom");
         let uplifted = profile_dir.join(&name);
         let raw = profile_dir.join("deps").join(&name);
         [uplifted, raw]

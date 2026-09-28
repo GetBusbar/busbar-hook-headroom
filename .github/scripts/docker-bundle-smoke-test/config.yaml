@@ -24,7 +24,7 @@ models:
     provider: mock
 
 hooks:
-  headroom: { module: busbar-headroom, kind: gate, prompt: rw, timeout_ms: 50 }
+  headroom: { module: busbar-hook-headroom, kind: gate, prompt: rw, timeout_ms: 50 }
 
 pools:
   default:

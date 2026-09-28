@@ -45,7 +45,7 @@ fn cdylib() -> Vec<u8> {
         .parent()
         .and_then(|d| d.parent())
         .expect("target/<profile>");
-    let file = busbar_plugin_loader::plugin_library_filename("headroom_hook");
+    let file = busbar_plugin_loader::plugin_library_filename("busbar_hook_headroom");
     let found = [profile.join(&file), profile.join("deps").join(&file)]
         .into_iter()
         .filter_map(|p| Some((std::fs::metadata(&p).ok()?.modified().ok()?, p)))
@@ -57,7 +57,7 @@ fn cdylib() -> Vec<u8> {
 
 /// The statement both doors make: headroom as a `kind: hook` plugin declaring `prompt: rw`.
 fn statement(kind: &str) -> Manifest {
-    let (name, alias, _) = headroom_hook::linked::HOOK;
+    let (name, alias, _) = busbar_hook_headroom::linked::HOOK;
     let abi = busbar_plugin_loader::supported_abi(kind)
         .iter()
         .copied()
@@ -88,7 +88,7 @@ fn statement(kind: &str) -> Manifest {
 
 /// The LINKED row: exactly what a busbar composition root that links this crate states.
 fn linked_registry() -> PluginRegistry {
-    let (_, _, entry) = headroom_hook::linked::HOOK;
+    let (_, _, entry) = busbar_hook_headroom::linked::HOOK;
     PluginRegistry::empty()
         .link(vec![LinkedPlugin::boundary(statement("hook"), entry)])
         .expect("the linked row registers")

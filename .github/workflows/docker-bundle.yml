@@ -140,7 +140,7 @@ jobs:
       #
       #   * The host build produced a FULLY STATIC musl busbar. A static musl binary contains no
       #     dynamic loader, so its dlopen() is a stub that always fails. Every published bundle
-      #     died at boot with "failed to load plugin 'busbar-headroom': Dynamic loading not
+      #     died at boot with "failed to load plugin 'busbar-hook-headroom': Dynamic loading not
       #     supported" - i.e. the one thing this image exists to do could never happen. Verified
       #     by running the published getbusbar/busbar-headroom:2.0.3 and :2.0.4 images directly.
       #   * Even built dynamically, a busbar linked against Ubuntu's musl-tools musl and a cdylib
@@ -188,8 +188,8 @@ jobs:
               cp target/pgo/release/busbar /bb/busbar
               cp target/pgo/release/busbar.pgo-verified /bb/busbar.pgo-verified
               cd /src/headroom-hook
-              RUSTFLAGS="-C target-feature=-crt-static" cargo build --release --locked --lib -p headroom-hook
-              cp target/release/libheadroom_hook.so /libs/libheadroom_hook.so
+              RUSTFLAGS="-C target-feature=-crt-static" cargo build --release --locked --lib -p busbar-hook-headroom
+              cp target/release/libbusbar_hook_headroom.so /libs/libbusbar_hook_headroom.so
               cp /usr/lib/libstdc++.so.6 /usr/lib/libgcc_s.so.1 /libs/
               # BOTH musl names as REAL files: ld-musl-<arch>.so.1 is busbar PT_INTERP (without it
               # the kernel cannot exec the binary at all and reports a misleading "permission
@@ -288,8 +288,8 @@ jobs:
             unsigned_flag="--allow-unsigned"
           fi
           busbar/target/release/busbar-plugin-pack pack \
-            --lib "headroom-libs/libheadroom_hook.so" \
-            --name "busbar-headroom" --alias "headroom" --kind hook \
+            --lib "headroom-libs/libbusbar_hook_headroom.so" \
+            --name "busbar-hook-headroom" --alias "headroom" --kind hook \
             --version "$ver" --publisher busbar \
             --needs-prompt rw \
             --description "busbar headroom hook plugin: deterministic rule-based prompt-compression rewrite gate" \
@@ -453,9 +453,9 @@ jobs:
             docker rm -f smoke >/dev/null 2>&1 || true
             exit 1
           }
-          grep -q "plugin validated.*busbar-headroom" <<<"$log" \
+          grep -q "plugin validated.*busbar-hook-headroom" <<<"$log" \
             || fail "the headroom plugin manifest did not validate inside the image"
-          grep -q "hook plugin declared content intent.*busbar-headroom" <<<"$log" \
+          grep -q "hook plugin declared content intent.*busbar-hook-headroom" <<<"$log" \
             || fail "the headroom cdylib was never successfully dlopened - busbar never got a content-intent declaration back from it. This is the exact defect this gate exists to catch."
           # `if`, not `cmd && fail`: under `set -e` a non-matching grep in an `&&` list makes the
           # whole list return 1 and kills the step, i.e. the gate would fail precisely when the

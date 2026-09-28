@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Locate the built `headroom-hook` cdylib in the target dir (mirrors the loader's hook_plugin_path).
-/// `[package] name = "headroom-hook"` -> cargo's cdylib filename is `libheadroom_hook.{so,dylib}`.
+/// `[package] name = "headroom-hook"` -> cargo's cdylib filename is `libbusbar_hook_headroom.{so,dylib}`.
 ///
 /// Checks BOTH `<profile_dir>/<name>` (the "uplifted" copy Cargo produces only when `[lib]` is a
 /// ROOT build target of the invocation, e.g. `cargo build --all-targets`) AND
@@ -34,7 +34,7 @@ fn plugin_path() -> Option<std::path::PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
-        let name = busbar_plugin_loader::plugin_library_filename("headroom_hook");
+        let name = busbar_plugin_loader::plugin_library_filename("busbar_hook_headroom");
         let uplifted = profile_dir.join(&name);
         let raw = profile_dir.join("deps").join(&name);
         [uplifted, raw]

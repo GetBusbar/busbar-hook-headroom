@@ -54,13 +54,13 @@ fi
 
 echo "== check 1: headroom is loaded as a plugin (real admin API) =="
 INFO_JSON="$(curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:8080/api/v1/admin/plugins?type=hooks")"
-if ! echo "$INFO_JSON" | grep -q "busbar-headroom"; then
-  echo "FAIL: busbar-headroom is not in the loaded plugins list" >&2
+if ! echo "$INFO_JSON" | grep -q "busbar-hook-headroom"; then
+  echo "FAIL: busbar-hook-headroom is not in the loaded plugins list" >&2
   echo "$INFO_JSON" >&2
   docker logs smoke-headroom >&2 || true
   exit 1
 fi
-echo "ok: busbar-headroom is a loaded plugin"
+echo "ok: busbar-hook-headroom is a loaded plugin"
 
 echo "== check 2: a real request through the gate is genuinely compressed =="
 # A noisy, repetitive "tool log" — mirrors tests/e2e_admin_api.rs's log_dump() shape, well above

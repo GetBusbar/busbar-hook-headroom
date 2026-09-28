@@ -4,7 +4,7 @@ One harness, one command. Every published number is produced by
 [`docker_ab.py`](docker_ab.py) running the **shipped `getbusbar/busbar` image** with
 the Headroom `kind: hook` dlopen plugin — built and packed from THIS checkout — loaded
 into it, exactly the way a real install runs the 1.5.0 signed-plugin ABI. There is no
-separate `headroom-hook` image or container: since the port to busbar's plugin ABI, a
+separate `busbar-hook-headroom` image or container: since the port to busbar's plugin ABI, a
 hook is a `cdylib` busbar loads in-process, not a sidecar with its own image.
 
 ## Run it

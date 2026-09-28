@@ -186,6 +186,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-hook-headroom"
+version = "2.0.22"
+dependencies = [
+ "base64 0.22.1",
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "headroom-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tiny_http",
+ "tokio",
+]
+
+[[package]]
 name = "busbar-kernel-ledger"
 version = "1.6.0"
 source = "git+https://github.com/GetBusbar/busbar?rev=7a5b429041752e00375e120ab1547a8928c3dee4#7a5b429041752e00375e120ab1547a8928c3dee4"
@@ -993,21 +1008,6 @@ dependencies = [
  "tree-sitter-rust",
  "tree-sitter-typescript",
  "unidiff",
-]
-
-[[package]]
-name = "headroom-hook"
-version = "2.0.22"
-dependencies = [
- "base64 0.22.1",
- "busbar-contract",
- "busbar-plugin-loader",
- "headroom-core",
- "reqwest",
- "serde",
- "serde_json",
- "tiny_http",
- "tokio",
 ]
 
 [[package]]

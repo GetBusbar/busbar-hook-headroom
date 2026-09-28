@@ -1,4 +1,4 @@
-# Contributing to headroom-hook
+# Contributing to busbar-hook-headroom
 
 Thanks for your interest. This is a small Rust cdylib — a Busbar
 [hook](https://getbusbar.com/docs/hooks/) that compresses chat history with
