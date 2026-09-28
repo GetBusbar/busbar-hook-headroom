@@ -24,8 +24,8 @@ jobs:
     uses: GetBusbar/busbar/.github/workflows/plugin-consumer-verify.yml@7a5b429041752e00375e120ab1547a8928c3dee4
     with:
       version: ${{ inputs.version || '' }}
-      asset_prefix: busbar-headroom
-      plugin_name: busbar-headroom
+      asset_prefix: busbar-hook-headroom
+      plugin_name: busbar-hook-headroom
       plugin_alias: headroom
       plugin_kind: hook
       bundle_image: "getbusbar/busbar-headroom"
