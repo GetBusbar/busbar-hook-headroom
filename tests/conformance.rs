@@ -333,7 +333,9 @@ fn the_linked_and_the_dropped_in_headroom_gate_are_one_gate() {
         Err(e) => e,
     };
     assert!(
-        e.contains("plugin 'headroom' exports kind 'hook' but is being loaded as 'store'"),
+        e.contains(
+            "plugin 'busbar-hook-headroom' exports kind 'hook' but is being loaded as 'store'"
+        ),
         "{e}"
     );
 

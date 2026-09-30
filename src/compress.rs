@@ -217,6 +217,22 @@ fn estimate_dollars_saved(tokens_saved: u64, price_udollars_per_ktok: f64) -> f6
     tokens_saved as f64 * price_udollars_per_ktok / 1000.0 / 1_000_000.0
 }
 
+/// Run one per-message compression under PANIC CONTAINMENT: if `compress` panics, the message is
+/// kept verbatim. The compressor is a parameter so the containment is testable without a
+/// `TextCrusher` input that panics. (`AssertUnwindSafe` is sound here: the closure only reads
+/// `text`/`query` and the compressor is dropped either way.)
+pub(crate) fn compress_or_keep(
+    text: &str,
+    query: &str,
+    target_ratio: f64,
+    compress: impl Fn(&str, &str, f64) -> String,
+) -> String {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        compress(text, query, target_ratio)
+    }))
+    .unwrap_or_else(|_| text.to_string())
+}
+
 /// The `transform` op: compress the granted prompt's history, keep the ask. Returns `{}` (abstain)
 /// whenever there is no grant, no/too-short history, or the savings don't clear `min_savings_pct`;
 /// otherwise `{"rewrite": {"messages": [...]}}` with each entry in BODY form
@@ -260,12 +276,9 @@ pub fn run_transform(payload: &Value, knobs: &RwLock<Knobs>, metrics: &Mutex<Met
             // panics on some input, keep that message verbatim instead of dying — a hook must
             // never crash on malformed/adversarial content. (`AssertUnwindSafe` is sound here:
             // the closure only reads `&m.text`/`&query` and the crusher is dropped either way.)
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                crusher
-                    .compress(&m.text, &query, Some(knobs_v.target_ratio))
-                    .compressed
-            }))
-            .unwrap_or_else(|_| m.text.clone())
+            compress_or_keep(&m.text, &query, knobs_v.target_ratio, |text, q, ratio| {
+                crusher.compress(text, q, Some(ratio)).compressed
+            })
         };
         chars_after += text.len();
         // BODY form: {role, content} — spliced verbatim into the request's `messages`.

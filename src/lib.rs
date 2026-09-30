@@ -93,7 +93,12 @@ impl HookHandler for Headroom {
                 *self.knobs.write().unwrap_or_else(|e| e.into_inner()) = new;
                 true
             }
-            Err(_) => false,
+            Err(e) => {
+                busbar_contract::abi::sdk::hostlog::warn(&format!(
+                    "headroom: configure v{settings_version} rejected: {e}"
+                ));
+                false
+            }
         }
     }
 
@@ -139,8 +144,11 @@ busbar_contract::abi::sdk::export_hook_plugin!(open);
 /// above) the loader's one cold-lane load runs over. One source, both doors.
 pub mod linked {
     /// `(name, alias, boundary)`.
-    pub const HOOK: (&str, &str, &busbar_contract::abi::sdk::ColdEntry) =
-        ("headroom", "headroom", &super::BUSBAR_COLD_ENTRY);
+    pub const HOOK: (&str, &str, &busbar_contract::abi::sdk::ColdEntry) = (
+        "busbar-hook-headroom",
+        "headroom",
+        &super::BUSBAR_COLD_ENTRY,
+    );
 }
 
 #[cfg(test)]
