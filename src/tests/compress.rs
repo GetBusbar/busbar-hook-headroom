@@ -521,3 +521,165 @@ fn latency_multi_kb_prompt() {
         "compression should be well under a serving-acceptable deadline, got {per:?}"
     );
 }
+
+/// The three places a setting's bounds/default are written (`apply_settings`, `settings_schema`,
+/// `Knobs::default`) must agree: for every schema property the default equals the `Knobs` default,
+/// `apply_settings` accepts the minimum and maximum, and rejects just outside them.
+#[test]
+fn settings_schema_agrees_with_knobs_and_apply_settings() {
+    let schema = settings_schema();
+    let props = schema["properties"].as_object().expect("properties");
+    let d = Knobs::default();
+    let field = |k: &Knobs, name: &str| match name {
+        "target_ratio" => k.target_ratio,
+        "min_savings_pct" => k.min_savings_pct,
+        "price_udollars_per_ktok" => k.price_udollars_per_ktok,
+        other => panic!("schema property {other:?} has no Knobs field in this test"),
+    };
+    assert_eq!(
+        props.len(),
+        3,
+        "a new setting needs a row in this cross-check"
+    );
+    let one = |name: &str, v: f64| {
+        let mut m = serde_json::Map::new();
+        m.insert(name.to_string(), json!(v));
+        apply_settings(&m)
+    };
+    for (name, p) in props {
+        let (min, max, def) = (
+            p["minimum"].as_f64().unwrap(),
+            p["maximum"].as_f64().unwrap(),
+            p["default"].as_f64().unwrap(),
+        );
+        assert_eq!(
+            def,
+            field(&d, name),
+            "{name}: schema default != Knobs::default"
+        );
+        assert_eq!(
+            field(&apply_settings(&serde_json::Map::new()).unwrap(), name),
+            def
+        );
+        assert_eq!(
+            field(&one(name, min).unwrap(), name),
+            min,
+            "{name}: minimum accepted"
+        );
+        assert_eq!(
+            field(&one(name, max).unwrap(), name),
+            max,
+            "{name}: maximum accepted"
+        );
+        let eps = (max - min) * 1e-6;
+        assert!(
+            one(name, min - eps).is_err(),
+            "{name}: just below minimum must be rejected"
+        );
+        assert!(
+            one(name, max + eps).is_err(),
+            "{name}: just above maximum must be rejected"
+        );
+    }
+}
+
+/// `transform_payload` with an explicit pool.
+fn pool_payload(pool: &str, messages: Vec<(&str, String)>) -> Value {
+    let mut p = transform_payload(messages);
+    p["request"]["pool"] = json!(pool);
+    p
+}
+
+/// Metrics ACCUMULATE across requests and per pool: two committing + one abstaining transform on
+/// pool `p` and one abstaining on pool `q`. Requests, overhead samples and input tokens count every
+/// request; tokens saved count ONLY the committed requests' savings.
+#[test]
+fn metrics_accumulate_per_pool_and_only_committed_saves() {
+    let knobs = locked(Knobs {
+        target_ratio: 0.4,
+        min_savings_pct: 10.0,
+        ..Knobs::default()
+    });
+    let metrics = Mutex::new(Metrics::default());
+    let big = || {
+        pool_payload(
+            "p",
+            vec![
+                ("user", log_dump(40)),
+                ("user", "why did the deployment fail".to_string()),
+            ],
+        )
+    };
+    let small = |pool: &str| {
+        pool_payload(
+            pool,
+            vec![("user", "hi".to_string()), ("user", "there".to_string())],
+        )
+    };
+    let mut delta_chars = 0u64;
+    for _ in 0..2 {
+        let reply = run_transform(&big(), &knobs, &metrics);
+        let out: usize = reply["rewrite"]["messages"]
+            .as_array()
+            .expect("committed")
+            .iter()
+            .map(|m| m["content"].as_str().unwrap().len())
+            .sum();
+        let before = log_dump(40).len() + "why did the deployment fail".len();
+        delta_chars += (before - out) as u64;
+    }
+    assert_eq!(run_transform(&small("p"), &knobs, &metrics), json!({}));
+    assert_eq!(run_transform(&small("q"), &knobs, &metrics), json!({}));
+
+    let status = build_status(&knobs, &metrics);
+    let m = status["status"]["metrics"].as_array().unwrap();
+    let val = |name: &str, pool: &str| {
+        m.iter()
+            .find(|e| e["name"] == name && e["labels"]["pool"] == pool)
+            .unwrap_or_else(|| panic!("{name}{{pool={pool}}}"))["value"]
+            .clone()
+    };
+    assert_eq!(val("headroom_requests_total", "p"), 3);
+    assert_eq!(val("headroom_requests_total", "q"), 1);
+    assert_eq!(val("headroom_overhead_ms_count", "p"), 3);
+    assert_eq!(val("headroom_overhead_ms_count", "q"), 1);
+    assert_eq!(
+        val("headroom_tokens_saved_total", "p"),
+        est_tokens(delta_chars),
+        "only the committed requests' savings count"
+    );
+    assert_eq!(val("headroom_tokens_saved_total", "q"), 0);
+}
+
+/// Every dashboard widget's `metric` is a `name` that `build_status` actually emits.
+#[test]
+fn dashboard_widgets_reference_emitted_metric_names() {
+    let knobs = locked(Knobs::default());
+    let metrics = Mutex::new(Metrics::default());
+    let payload = transform_payload(vec![
+        ("user", log_dump(40)),
+        ("user", "why did the deployment fail".to_string()),
+    ]);
+    assert!(
+        run_transform(&payload, &knobs, &metrics)
+            .get("rewrite")
+            .is_some()
+    );
+    let status = build_status(&knobs, &metrics);
+    let emitted: Vec<&str> = status["status"]["metrics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    let describe = describe_reply();
+    let widgets = describe["dashboard"]["widgets"].as_array().unwrap();
+    assert!(!widgets.is_empty());
+    for w in widgets {
+        let metric = w["metric"].as_str().unwrap();
+        assert!(
+            emitted.contains(&metric),
+            "widget metric {metric:?} is never emitted by build_status: {emitted:?}"
+        );
+    }
+}
