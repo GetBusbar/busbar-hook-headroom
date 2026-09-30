@@ -19,8 +19,8 @@ using [headroom](https://github.com/headroomlabs-ai/headroom)'s Rust
 compression core (`TextCrusher`, pure BM25: no model, no network, no proxy).
 A `kind: hook` `prompt: rw` rewrite gate, shipped as a signed `dlopen`
 plugin busbar loads in-process over its plugin ABI (no standalone binary,
-no socket); targets busbar's `dev` branch (pre-1.5.0, where the plugin ABI
-this crate depends on lives) and pins a `headroom-core` rev.
+no socket); targets busbar 1.6.0 (plugin ABI v2, the rev pinned in
+`.busbar-ref`) and pins a `headroom-core` rev.
 
 ### Benchmark
 
@@ -253,9 +253,9 @@ Every series carries a `pool` label, so one process serving N pools shows N rows
 Two caveats worth stating rather than discovering. The token and dollar figures are derived from a
 BYTE count divided by a chars-per-token constant, so on text that is not mostly ASCII (CJK, emoji,
 any script above the Latin range) they over-report by roughly the UTF-8 expansion factor. The
-savings PERCENTAGE is unaffected, since both sides of the ratio are counted the same way. And these
-are the names this hook emits; they are not Headroom's upstream vocabulary, so a dashboard built
-against Headroom's own metric names will not light up unmodified.
+savings PERCENTAGE is unaffected, since both sides of the ratio are counted the same way. And the
+`headroom_*` names mirror Headroom's own `/metrics` exposition verbatim, so a dashboard built for
+Headroom reads them off busbar unmodified (see `grafana/README.md`).
 
 ### Wire into busbar (fleet-wide)
 
