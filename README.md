@@ -10,6 +10,8 @@ Compresses LLM chat history with the real headroom-core BM25 TextCrusher engine 
 [![ci](https://github.com/GetBusbar/busbar-hook-headroom/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/GetBusbar/busbar-hook-headroom/actions/workflows/ci.yml)
 <!-- fleet:header:end -->
 
+## What it is for
+
 [![Coverage](https://codecov.io/gh/GetBusbar/busbar-hook-headroom/branch/dev/graph/badge.svg)](https://codecov.io/gh/GetBusbar/busbar-hook-headroom)
 
 **v2.** Compresses LLM chat history inside [busbar](https://getbusbar.com)
@@ -20,7 +22,7 @@ plugin busbar loads in-process over its plugin ABI (no standalone binary,
 no socket); targets busbar's `dev` branch (pre-1.5.0, where the plugin ABI
 this crate depends on lives) and pins a `headroom-core` rev.
 
-## Benchmark
+### Benchmark
 
 Measured the way busbar measures itself: from **busbar's own clock**. Busbar reports
 its internal processing time — total request time minus the upstream round-trip — in
@@ -89,7 +91,7 @@ just puts it in front of every model you call.
 
 Reproduce every number: see [`bench/README.md`](bench/README.md).
 
-## Install and run
+### Install and run
 
 Headroom is a **busbar plugin**: a signed cdylib busbar `dlopen`s in-process (busbar's
 plugin ABI). There is no standalone binary and no socket to wire up — busbar loads the
@@ -196,7 +198,7 @@ status/metrics surface.
 a plugin built for the target platform — Linux and macOS natively; on Windows, build
 and load it inside WSL2 or a Linux container alongside busbar.
 
-## The plugin ABI (busbar's `HookHandler` calls)
+### The plugin ABI (busbar's `HookHandler` calls)
 
 No wire, no serialization — busbar calls the loaded plugin in-process through the SDK's
 [`HookHandler`](https://github.com/GetBusbar/busbar) trait:
@@ -226,7 +228,7 @@ curl -X PATCH localhost:8080/api/v1/admin/hooks/headroom/settings \
   -d '{"target_ratio": 0.3, "min_savings_pct": 20}'
 ```
 
-## Metrics
+### Metrics
 
 The hook reports its own operational metrics on the `status` call, and busbar surfaces them two
 ways from that one source:
@@ -255,7 +257,7 @@ savings PERCENTAGE is unaffected, since both sides of the ratio are counted the 
 are the names this hook emits; they are not Headroom's upstream vocabulary, so a dashboard built
 against Headroom's own metric names will not light up unmodified.
 
-## Wire into busbar (fleet-wide)
+### Wire into busbar (fleet-wide)
 
 Plugins are enabled once; a hook instance is DEFINED ONCE in the top-level `hooks:` map (the name
 is the instance, `module:` is the plugin behind it) and REFERENCED BY BARE NAME wherever it
@@ -281,7 +283,7 @@ pools:
   hooks: [headroom]            # reserved all-pools attach: fires on every request, in order
 ```
 
-## A/B test it (same plugin, two pools)
+### A/B test it (same plugin, two pools)
 
 The clean experiment: one busbar, two pools over the same model — one with
 the hook, one without — and point half your traffic at each. Compare
@@ -314,3 +316,23 @@ builds and packs the plugin from this checkout, `dlopen`s it into a real
 (fewer tokens shipped than arrived) — the class of failure `cargo test` alone can't
 catch (manifest/ABI load failures, a silent no-op gate).
 The `bench/` directory has the full measurement rig and results.
+
+## Config
+
+Configured under the `headroom` module name.
+
+## Build
+
+```bash
+cargo build --release -p busbar-hook-headroom
+```
+
+## Tests
+
+```bash
+cargo test --workspace --locked
+```
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).

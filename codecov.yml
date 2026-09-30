@@ -1,12 +1,8 @@
-# Codecov is INFORMATIONAL here, never a gate. The correctness gate is CI's `ci` job (the canonical
-# plugin-ci build/test/signoff pipeline); coverage is an observation surfaced on the README badge and
-# as per-PR context. So:
-#   * status.*.informational: true  → Codecov posts a check for visibility but it is NEVER "failing",
-#     so it can never block a PR or turn a branch red over a coverage delta.
-#   * comment: false                → no bot comments on PRs; the signal lives on the badge + the
-#     Codecov UI, keeping PRs seamless.
-#   * ignore                        → exclude test-only / bench / non-product paths so the reported
-#     percentage reflects the shipped hook, not fixtures and benchmarks.
+# RENDERED by `cargo xtask fleet render` from GetBusbar/busbar's plugins.yaml and .github/fleet/.
+# Codecov is INFORMATIONAL, never a gate: the correctness gate is the `ci` job (busbar's
+# plugin-ci.yml). Coverage is an observation on the README badge and the Codecov UI, so every status
+# is informational, there are no PR comments, and test-only paths plus the busbar checkout the
+# end-to-end tests build are excluded from the percentage.
 coverage:
   status:
     project:
@@ -19,6 +15,5 @@ coverage:
 comment: false
 
 ignore:
-  - "tests"
-  - "src/tests"
-  - "bench"
+  - "**/tests"
+  - "busbar"

@@ -21,4 +21,7 @@ jobs:
       busbar_checkout: true
       macos_test: "cargo test --workspace --locked"
       extra_test: ""
+      plugin_crate: busbar-hook-headroom
+      plugin_kind: hook
+      plugin_alias: headroom
     secrets: inherit

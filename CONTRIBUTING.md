@@ -1,32 +1,32 @@
 # Contributing to busbar-hook-headroom
 
-Thanks for your interest. This is a small Rust cdylib — a Busbar
-[hook](https://getbusbar.com/docs/hooks/) that compresses chat history with
-[headroom-core](https://github.com/headroomlabs-ai/headroom).
+Thanks for your interest in improving `busbar-hook-headroom`.
 
 ## Ground rules
 
-- Be respectful and constructive (see [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)).
-- By contributing, you agree your contributions are licensed under the
-  project's [Apache-2.0](LICENSE) license.
+- Be respectful and constructive in all project spaces (see
+  [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)).
+- By contributing, you agree your contributions are licensed under the project's
+  [Apache-2.0](LICENSE) license.
+- Security issues go through [SECURITY.md](SECURITY.md), **not** public issues.
 
-## Build and test
+## Layout
 
-```sh
-cargo build --release --lib   # the shipped cdylib
-cargo test                 # unit + wire tests
-cargo clippy --all-targets -- -D warnings   # lints must be clean
-cargo fmt --all            # format before committing
+Every busbar plugin repo has the same shape. This one is a two-crate Cargo workspace:
+`hook-headroom/` holds the plugin's logic and `hook-headroom-plugin/` is the thin `cdylib` that
+packages it as a droppable `kind: hook` plugin. busbar itself is a git dependency
+pinned to the commit in `.busbar-ref`. The CI, release and lint configuration are
+rendered from [busbar's plugin registry](https://github.com/GetBusbar/busbar/blob/main/plugins.yaml);
+change them there, not here.
+
+## Before you open a pull request
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 ```
 
-The core (`src/compress.rs`, `src/lib.rs`) stays lean; tests live in
-`src/tests/`. Keep it that way — a hook is read by the people deciding whether
-to trust it on their request path.
-
-## Before a PR
-
-1. `cargo fmt --all` — rustfmt-clean.
-2. `cargo clippy --all-targets -- -D warnings` — no warnings.
-3. `cargo test` — green.
-4. If you touch the wire behavior, add or update a test in `src/tests/` that
-   pins it.
+The README's Tests section names any live backend the full suite needs. Add or update
+tests for any behavior change, and update the README when you change behavior or
+config. Keep commits focused and describe what changed, why, and how it was verified.
