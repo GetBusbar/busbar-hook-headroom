@@ -1,5 +1,5 @@
 # A minimal, CURRENT busbar config that wires this repo's headroom-hook plugin in as a
-# prompt-compression rewrite gate on every pool. Validated against the released busbar 1.5.3
+# prompt-compression rewrite gate on every pool. Validated against busbar 1.6.0 (the rev pinned in `.busbar-ref`)
 # with `busbar --validate`.
 #
 # This file used to describe the RETIRED Unix-socket transport (a `hooks.headroom.socket:` block
@@ -65,5 +65,5 @@ plugins:
   # correctly-signed first-party tarball with "manifest claims first-party publisher 'busbar' but
   # this build embeds no busbar release key". Until that is fixed upstream this opt-in is required
   # even for a signed release artifact; busbar then logs a per-plugin UNVERIFIED warning.
-  # See https://github.com/GetBusbar/busbar/issues/50
+  # See https://github.com/GetBusbar/busbar/issues/52
   trust: { allow_unsigned: true }
