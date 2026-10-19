@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   ci:
-    uses: GetBusbar/busbar/.github/workflows/plugin-ci.yml@7a5b429041752e00375e120ab1547a8928c3dee4
+    uses: GetBusbar/busbar/.github/workflows/plugin-ci.yml@04ae3882ae065fe2bc7f421181fe40677c8c17b4
     with:
       service: none
       busbar_checkout: true
@@ -29,7 +29,7 @@ jobs:
     secrets: inherit
   release:
     needs: ci
-    uses: GetBusbar/busbar/.github/workflows/plugin-release.yml@7a5b429041752e00375e120ab1547a8928c3dee4
+    uses: GetBusbar/busbar/.github/workflows/plugin-release.yml@04ae3882ae065fe2bc7f421181fe40677c8c17b4
     with:
       plugin_crate: busbar-hook-headroom
       manifest_name: busbar-hook-headroom
@@ -45,7 +45,7 @@ jobs:
   consumer-verify:
     needs: release
     if: ${{ !cancelled() }}
-    uses: GetBusbar/busbar/.github/workflows/plugin-consumer-verify.yml@7a5b429041752e00375e120ab1547a8928c3dee4
+    uses: GetBusbar/busbar/.github/workflows/plugin-consumer-verify.yml@04ae3882ae065fe2bc7f421181fe40677c8c17b4
     with:
       version: ${{ github.ref_name }}
       asset_prefix: busbar-hook-headroom
