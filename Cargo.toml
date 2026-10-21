@@ -20,18 +20,20 @@ crate-type = ["cdylib", "rlib"]
 headroom-core = { git = "https://github.com/headroomlabs-ai/headroom", tag = "v0.38.0", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# How the gate logs: the door's call capture turns a `tracing` record into a diagnostic on the call's
+# reply (BUSBAR-1.6.0.md decision #85); the plugin writes no log of its own.
+tracing = "0.1"
 # The ONE busbar crate this plugin names (#40: contract only; DECISIONS #84 merged the plugin SDK into
 # it as `busbar_contract::abi::sdk`, so the hook trait, the export macro and the hook shapes all come
 # from here). A git dependency on GetBusbar/busbar pinned to the rev in `.busbar-ref` field 1; a busbar
 # build that links this crate `[patch]`es the busbar git source to its own tree, so ONE copy links.
-busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "7a5b429041752e00375e120ab1547a8928c3dee4" }
+busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "82a8779dc8e89623b27403ef25aa68313197e76b" }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros"] }
-# The REAL loader (dev-only, never in the shipped artifact): the e2e and the linked/dropped-in
-# conformance tests open the built cdylib through it. Same pinned rev as busbar-contract above, so one
-# busbar source resolves.
-busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "7a5b429041752e00375e120ab1547a8928c3dee4" }
+# The REAL loader (dev-only, never in the shipped artifact): the door tests and busbar's published
+# conformance suite (`conformance_suite!`, the `conformance` feature) open the linked door and the
+# built cdylib through it. Same pinned rev as busbar-contract above, so one busbar source resolves.
+busbar-plugin-loader = { features = ["conformance"], git = "https://github.com/GetBusbar/busbar", rev = "82a8779dc8e89623b27403ef25aa68313197e76b" }
 # Dev-only: the real-admin-API e2e test builds+drives an actual `busbar` process over HTTP (install
 # a signed plugin tarball via POST /api/v1/admin/plugins, mint a key, drive a real chat completion)
 # — a blocking client keeps that test synchronous, no tokio runtime needed. Same major version

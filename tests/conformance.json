@@ -1,0 +1,43 @@
+{
+  "settings": { "min_savings_pct": 10.0 },
+  "hook": {
+    "bad_settings": [
+      "not json",
+      "[\"target_ratio\"]",
+      "null",
+      "{\"bogus_knob\": 1}",
+      "{\"target_ratio\": 2.0}"
+    ],
+    "order_cap": 2,
+    "requests": [
+      {
+        "label": "decide: abstain, headroom ranks nothing",
+        "op": "decide",
+        "candidates": [
+          { "idx": 3, "cost_per_mtok": 5.0, "available_concurrency": 2 },
+          { "idx": 9, "cost_per_mtok": 2.0, "available_concurrency": 1 },
+          { "idx": 7, "latency_ms": 90.0, "available_concurrency": 4 }
+        ],
+        "expect": { "verb": "abstain" }
+      },
+      {
+        "label": "transform: abstain, no prompt granted",
+        "op": "transform",
+        "candidates": [],
+        "expect": { "verb": "abstain" }
+      }
+    ],
+    "refresh": {
+      "settings": { "min_savings_pct": 50.0 },
+      "request": {
+        "label": "decide: abstain after the refresh",
+        "op": "decide",
+        "candidates": [
+          { "idx": 9, "cost_per_mtok": 2.0, "available_concurrency": 1 },
+          { "idx": 7, "latency_ms": 90.0, "available_concurrency": 4 }
+        ],
+        "expect": { "verb": "abstain" }
+      }
+    }
+  }
+}

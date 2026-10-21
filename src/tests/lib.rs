@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 
 /// `open` accepts empty/missing config and a valid settings map; a malformed config or an
 /// out-of-range/unknown-key settings map fails closed.
@@ -18,45 +19,63 @@ fn open_config_handling() {
     );
 }
 
-/// The linked row states the same name the shipped tarball's manifest does (`release.yml`
+/// The Statement names the plugin as the shipped tarball's manifest does (`release.yml`
 /// `manifest_name`), so config `module: busbar-hook-headroom` resolves on a build that links this
 /// crate.
 #[test]
-fn linked_row_states_the_shipped_manifest_name() {
-    assert_eq!(linked::HOOK.0, "busbar-hook-headroom");
-    assert_eq!(linked::HOOK.1, "headroom");
+fn the_statement_names_the_shipped_manifest() {
+    assert_eq!(NAME, "busbar-hook-headroom");
 }
 
-/// Records the capturing sink received (level, message). Process-global because the SDK's host log
-/// sink is process-global.
-static CAPTURED: Mutex<Vec<(u32, String)>> = Mutex::new(Vec::new());
+/// What a capturing subscriber received: `(level, message)`.
+type Captured = Arc<Mutex<Vec<(tracing::Level, String)>>>;
 
-extern "C" fn capture_sink(_ctx: *mut std::ffi::c_void, level: u32, msg: *const u8, len: usize) {
-    // SAFETY: the SDK passes a valid (ptr, len) borrowed for this call only.
-    let s = unsafe { std::slice::from_raw_parts(msg, len) };
-    CAPTURED
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .push((level, String::from_utf8_lossy(s).into_owned()));
+/// A `tracing` subscriber that keeps every event's level and message.
+struct Capture(Captured);
+
+struct Message(String);
+
+impl tracing::field::Visit for Message {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.0 = format!("{value:?}");
+        }
+    }
+}
+
+impl tracing::Subscriber for Capture {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut m = Message(String::new());
+        event.record(&mut m);
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((*event.metadata().level(), m.0));
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
 }
 
 /// A rejected `configure` NACKs AND tells the operator why: one WARN record naming the offending
 /// setting and the validation reason.
 #[test]
 fn rejected_configure_logs_the_reason() {
-    use busbar_contract::abi::cold::log_level;
-    // SAFETY: `capture_sink` is a `'static` fn and the null ctx is never dereferenced.
-    unsafe {
-        busbar_contract::abi::sdk::hostlog::install_sink(
-            capture_sink,
-            std::ptr::null_mut(),
-            log_level::TRACE,
-        );
-    }
+    let got: Captured = Arc::default();
     let h = Headroom::new(Knobs::default());
     let bad = json!({"target_ratio": 5});
-    assert!(!h.configure(bad.as_object().unwrap(), 4242));
-    let got = CAPTURED.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let acked = tracing::subscriber::with_default(Capture(Arc::clone(&got)), || {
+        h.configure(bad.as_object().unwrap(), 4242)
+    });
+    assert!(!acked);
+    let got = got.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let rec: Vec<_> = got
         .iter()
         .filter(|(_, m)| m.contains("configure v4242"))
@@ -66,8 +85,54 @@ fn rejected_configure_logs_the_reason() {
         1,
         "exactly one record for the rejected push: {got:?}"
     );
-    assert_eq!(rec[0].0, log_level::WARN);
+    assert_eq!(rec[0].0, tracing::Level::WARN);
     assert!(rec[0].1.contains("target_ratio"), "{}", rec[0].1);
+}
+
+/// `describe` returns the settings schema + dashboard envelope; `status` reports observed settings +
+/// Headroom-named metrics after a real compressing transform (tokens_saved > 0).
+#[test]
+fn describe_and_status_report_a_compressing_transform() {
+    let h = Headroom::new(Knobs::default());
+    let described = h.describe();
+    let schema = &described["schema"];
+    assert_eq!(schema["type"], "object");
+    assert!(schema["properties"]["target_ratio"].is_object());
+
+    let mut history = String::new();
+    for i in 0..80 {
+        if i == 40 {
+            history.push_str("ERROR: deployment canary failed with status 503 on us-east-1.\n");
+        } else {
+            history.push_str(&format!(
+                "Routine step {i} completed in the staging environment without incident.\n"
+            ));
+        }
+    }
+    let payload = json!({
+        "request": {
+            "pool": "p",
+            "messages": [
+                {"role": "user", "text": history},
+                {"role": "user", "text": "why did the deployment fail"}
+            ]
+        }
+    });
+    assert!(h.transform(&payload).get("rewrite").is_some());
+
+    let reply = h.status();
+    let status = &reply["status"];
+    assert_eq!(status["settings"]["target_ratio"], 0.5);
+    let saved = status["metrics"]
+        .as_array()
+        .expect("metrics")
+        .iter()
+        .find(|m| m["name"] == "headroom_tokens_saved_total")
+        .expect("headroom_tokens_saved_total metric");
+    assert!(
+        saved["value"].as_u64().unwrap() > 0,
+        "compression saved tokens"
+    );
 }
 
 /// `decide` and `notify` are inert (Headroom is not a router or a tap).

@@ -8,9 +8,18 @@
 //! Formerly a standalone Unix-socket hook service (`main.rs`, now deleted) speaking busbar's
 //! 5-message wire (`configure`/`describe`/`decide`/`transform`/`notify`) as newline-delimited JSON
 //! over a kept-alive connection. Now a `cdylib` implementing the plugin SDK's [`HookHandler`]
-//! trait directly — the wire-line dispatch is gone (the engine calls in-process through the dlopen
-//! ABI), but the compression logic in [`compress`] is a straight port of the old socket hook's
+//! trait directly — the wire-line dispatch is gone (the engine calls in-process), but the
+//! compression logic in [`compress`] is a straight port of the old socket hook's
 //! `handle_line`/`build_status`/`apply_settings`.
+//!
+//! ## The door
+//!
+//! The hook kind's memory ABI (`busbar_contract::hook_door!`): [`Open`] opens a [`Headroom`] from the
+//! settings document and hands it to the SDK's `json_hook`, which rebuilds each view as the 1.5.5 JSON
+//! this gate reads and lowers each reply exactly as 1.5.5's host normalized it. The Statement states
+//! a gate that asks for the prompt at `rw` and for no caller identity. One source, both doors: a
+//! busbar build that links this crate names [`linked::door`] / [`linked::MACRO_DOOR`], and the
+//! built `cdylib` exports the same door as its one symbol.
 //!
 //! ## Ops
 //!
@@ -37,9 +46,14 @@
 //! OPERATOR also grants `prompt: rw`; absent that grant the payload carries no `request.messages`
 //! and this gate abstains — it can never coerce content.
 
+#![deny(unsafe_code)]
+
 mod compress;
 
+use busbar_contract::abi::hook::{CLASS_GATE, PROMPT_RW, Tail, USER_NO};
 use busbar_contract::abi::sdk::HookHandler;
+use busbar_contract::abi::sdk::door::statement;
+use busbar_contract::abi::sdk::hook::{Hook, HookOpen, json_hook, statement_with_tail, tail};
 use compress::{Knobs, Metrics, build_status, describe_reply, run_transform};
 use serde_json::{Map, Value, json};
 use std::sync::{Mutex, RwLock};
@@ -94,9 +108,9 @@ impl HookHandler for Headroom {
                 true
             }
             Err(e) => {
-                busbar_contract::abi::sdk::hostlog::warn(&format!(
-                    "headroom: configure v{settings_version} rejected: {e}"
-                ));
+                // The call's capture turns this record into a diagnostic on the reply, which the
+                // host writes to the plugin's log (BUSBAR-1.6.0.md decision #85).
+                tracing::warn!("headroom: configure v{settings_version} rejected: {e}");
                 false
             }
         }
@@ -136,19 +150,47 @@ fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
     Ok(Box::new(Headroom::new(knobs)))
 }
 
-busbar_contract::abi::sdk::export_hook_plugin!(open);
+/// How many ops one instance holds in flight; the host clamps. Compression is CPU-only.
+pub const MAX_INFLIGHT: u32 = 64;
 
-/// THE LINKED ENTRY (DECISIONS #2 rule (1)): what a busbar build that compiles this gate in registers
-/// onto the hook axis — the same row, name and alias a dropped-in signed tarball of this crate's
-/// `cdylib` states, and the boundary (`BUSBAR_COLD_ENTRY`, emitted by the one `export_hook_plugin!`
-/// above) the loader's one cold-lane load runs over. One source, both doors.
+/// The plugin's name: its Statement's, the linked row's and the shipped manifest's
+/// (`release.yml` `manifest_name`).
+pub const NAME: &str = "busbar-hook-headroom";
+
+/// A rewrite gate: it reads the prompt at `rw` and asks for no caller identity.
+const TAIL: &Tail = &tail(CLASS_GATE, PROMPT_RW, USER_NO);
+
+/// Opens a [`Headroom`] from the operator's settings document and bridges it onto the hook kind's
+/// typed ops with the SDK's `json_hook`.
+#[derive(Debug)]
+pub struct Open;
+
+impl HookOpen for Open {
+    fn open(settings: &str) -> Result<Box<dyn Hook>, String> {
+        open(settings).map(json_hook)
+    }
+}
+
+busbar_contract::hook_door! {
+    open: Open,
+    statement: statement_with_tail(
+        statement(NAME, env!("CARGO_PKG_VERSION"), MAX_INFLIGHT),
+        TAIL,
+    ),
+}
+
+/// The exported door: this image's ONE symbol, `busbar_plugin_door`, forwards to [`door`]. The
+/// macro's `#[unsafe(no_mangle)]` is the one reviewed exemption from `deny(unsafe_code)`.
+#[allow(unsafe_code)]
+mod exported {
+    busbar_contract::export_door!(crate::door);
+}
+
+/// THE LINKED ENTRY (DECISIONS #2 rule (1)): what a busbar build that compiles this gate in
+/// registers onto the hook axis: its door, the same door a dropped-in signed tarball of this
+/// crate's `cdylib` exports.
 pub mod linked {
-    /// `(name, alias, boundary)`.
-    pub const HOOK: (&str, &str, &busbar_contract::abi::sdk::ColdEntry) = (
-        "busbar-hook-headroom",
-        "headroom",
-        &super::BUSBAR_COLD_ENTRY,
-    );
+    pub use crate::{MACRO_DOOR, door};
 }
 
 #[cfg(test)]

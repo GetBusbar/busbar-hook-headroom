@@ -169,19 +169,23 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "busbar-contract"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar?rev=7a5b429041752e00375e120ab1547a8928c3dee4#7a5b429041752e00375e120ab1547a8928c3dee4"
+source = "git+https://github.com/GetBusbar/busbar?rev=82a8779dc8e89623b27403ef25aa68313197e76b#82a8779dc8e89623b27403ef25aa68313197e76b"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "futures",
  "hex",
  "http",
+ "indexmap",
  "memchr",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "serde_yaml_ng",
+ "sha2 0.10.9",
  "smallvec",
  "tracing",
  "tracing-core",
+ "tracing-log",
  "zeroize",
 ]
 
@@ -197,37 +201,15 @@ dependencies = [
  "serde",
  "serde_json",
  "tiny_http",
- "tokio",
-]
-
-[[package]]
-name = "busbar-kernel-ledger"
-version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar?rev=7a5b429041752e00375e120ab1547a8928c3dee4#7a5b429041752e00375e120ab1547a8928c3dee4"
-dependencies = [
- "busbar-contract",
- "serde",
- "sha2 0.11.0",
-]
-
-[[package]]
-name = "busbar-kernel-wal"
-version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar?rev=7a5b429041752e00375e120ab1547a8928c3dee4#7a5b429041752e00375e120ab1547a8928c3dee4"
-dependencies = [
- "busbar-contract",
- "sha2 0.11.0",
+ "tracing",
 ]
 
 [[package]]
 name = "busbar-plugin-loader"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar?rev=7a5b429041752e00375e120ab1547a8928c3dee4#7a5b429041752e00375e120ab1547a8928c3dee4"
+source = "git+https://github.com/GetBusbar/busbar?rev=82a8779dc8e89623b27403ef25aa68313197e76b#82a8779dc8e89623b27403ef25aa68313197e76b"
 dependencies = [
- "async-trait",
  "busbar-contract",
- "busbar-kernel-ledger",
- "busbar-kernel-wal",
  "ed25519-dalek",
  "flate2",
  "futures",
@@ -237,7 +219,6 @@ dependencies = [
  "libloading",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "tar",
  "tokio",
  "tracing",
@@ -707,16 +688,6 @@ name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
-
-[[package]]
-name = "errno"
-version = "0.3.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
-dependencies = [
- "libc",
- "windows-sys 0.61.2",
-]
 
 [[package]]
 name = "esaxx-rs"
@@ -1312,6 +1283,8 @@ checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
 dependencies = [
  "equivalent",
  "hashbrown 0.17.1",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -1406,12 +1379,6 @@ dependencies = [
  "pkg-config",
  "vcpkg",
 ]
-
-[[package]]
-name = "linux-raw-sys"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "litemap"
@@ -1983,19 +1950,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustix"
-version = "1.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
-dependencies = [
- "bitflags",
- "errno",
- "libc",
- "linux-raw-sys",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "rustls"
 version = "0.23.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2118,6 +2072,19 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
+]
+
+[[package]]
+name = "serde_yaml_ng"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b4db627b98b36d4203a7b458cf3573730f2bb591b28871d916dfa9efabfd41f"
+dependencies = [
+ "indexmap",
+ "itoa",
+ "ryu",
+ "serde",
+ "unsafe-libyaml",
 ]
 
 [[package]]
@@ -2310,7 +2277,6 @@ checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
 dependencies = [
  "filetime",
  "libc",
- "xattr",
 ]
 
 [[package]]
@@ -2461,19 +2427,7 @@ dependencies = [
  "mio",
  "pin-project-lite",
  "socket2",
- "tokio-macros",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "tokio-macros"
-version = "2.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "385a6cb71ab9ab790c5fe8d67f1645e6c450a7ce006a33de03daa956cf70a496"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.118",
 ]
 
 [[package]]
@@ -2614,6 +2568,17 @@ checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
  "valuable",
+]
+
+[[package]]
+name = "tracing-log"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
+dependencies = [
+ "log",
+ "once_cell",
+ "tracing-core",
 ]
 
 [[package]]
@@ -2775,6 +2740,12 @@ name = "unit-prefix"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81e544489bf3d8ef66c953931f56617f423cd4b5494be343d9b9d3dda037b9a3"
+
+[[package]]
+name = "unsafe-libyaml"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"
@@ -3105,16 +3076,6 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
-
-[[package]]
-name = "xattr"
-version = "1.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
-dependencies = [
- "libc",
- "rustix",
-]
 
 [[package]]
 name = "yoke"

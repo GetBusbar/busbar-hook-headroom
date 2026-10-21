@@ -1,66 +1,84 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! End-to-end coverage of the `headroom-hook` compression gate loaded over the REAL
-//! `busbar-plugin-loader` `open_hook` seam (`load_hook_from_bytes`) — the exact seam busbar's
-//! engine sees: an `Arc<dyn RoutingPolicy>` indistinguishable from a compiled-in policy, whose
-//! `transform` compresses the granted prompt with the REAL `headroom-core` BM25 `TextCrusher`
-//! engine, and whose reply is parsed through the engine's own fail-closed `hooks::wire`
-//! normalizers.
+//! End-to-end coverage of the `headroom` compression gate over busbar's REAL loader, through BOTH
+//! doors: the LINKED door (`linked::MACRO_DOOR`, what a busbar build that compiles this crate in
+//! registers) and the DROPPED-IN door (this crate's built cdylib). Each is admitted through the one
+//! loader, opened over settings, and driven with `transform` over the host's view of a granted
+//! prompt, whose rewrite compresses with the REAL `headroom-core` BM25 `TextCrusher` engine.
 //!
-//! The corpus fixtures (`log_dump`) are shared with `src/tests/compress.rs`: a toy 2-word string
-//! never triggers BM25/TextCrusher's real compression path, since `TextCrusher` passes short texts
-//! (<6 segments) through unchanged.
+//! The corpus fixtures (`log_dump`) are shared in spirit with `src/tests/compress.rs`: a toy 2-word
+//! string never triggers BM25/TextCrusher's real compression path, since `TextCrusher` passes short
+//! texts (<6 segments) through unchanged.
 
-use busbar_contract::hooks::{
-    Candidate, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest, TransformOutcome,
-};
-use busbar_plugin_loader::hook::{HookProjectors, load_hook_from_bytes};
 use std::sync::Arc;
-use std::time::Duration;
 
-/// Locate the built `headroom-hook` cdylib in the target dir (mirrors the loader's hook_plugin_path).
-/// `[package] name = "headroom-hook"` -> cargo's cdylib filename is `libbusbar_hook_headroom.{so,dylib}`.
-///
-/// Checks BOTH `<profile_dir>/<name>` (the "uplifted" copy Cargo produces only when `[lib]` is a
-/// ROOT build target of the invocation, e.g. `cargo build --all-targets`) AND
-/// `<profile_dir>/deps/<name>` (the raw compiler output, refreshed on EVERY build that recompiles
-/// the lib, uplifted or not). A bare `cargo test` (what this repo's own CI runs) does NOT uplift
-/// the cdylib to the top-level profile dir, only to `target/deps` — checking only `profile_dir`
-/// silently finds nothing even though the cdylib really was built, so every test below would
-/// no-op via this function's `None` return, appearing to pass without exercising a single line of
-/// the real cdylib.
-fn plugin_path() -> Option<std::path::PathBuf> {
-    let candidate = (|| {
-        let exe = std::env::current_exe().ok()?;
-        let profile_dir = exe.parent()?.parent()?;
-        let name = busbar_plugin_loader::plugin_library_filename("busbar_hook_headroom");
-        let uplifted = profile_dir.join(&name);
-        let raw = profile_dir.join("deps").join(&name);
-        [uplifted, raw]
-            .into_iter()
-            .filter_map(|p| {
-                std::fs::metadata(&p)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .map(|mtime| (p, mtime))
-            })
-            .max_by_key(|(_, mtime)| *mtime)
-            .map(|(p, _)| p)
-    })();
-    if candidate.is_none() && std::env::var_os("CI").is_some() {
-        panic!(
-            "the headroom-hook cdylib is not built under CI: `cargo test` must build it \
-             (checked both the uplifted target dir and target/deps). Refusing to silently skip \
-             real coverage."
-        );
+use busbar_contract::abi::hook::{DecideOut, TransformOut, VERB_ABSTAIN, VERB_REWRITE, slot};
+use busbar_contract::abi::host::hook::{DecideFrame, DecideView};
+use busbar_contract::abi::mechanism::call::{BLOB_JSON, Blob, Outcome};
+use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut, slot as life};
+use busbar_contract::abi::sdk::door::blank_out;
+use busbar_contract::hooks::{Candidate, PromptProjection, RoutingContext, RoutingRequest};
+use busbar_plugin_loader::dispatch::kinds::hook::Hook;
+use busbar_plugin_loader::dispatch::{
+    Bind, ConnTable, DispatchConfig, Dispatcher, Frame, LinkedRow, NoSink, Plugin, in_head,
+    load_dropped, load_linked, out_head, rendering_of_macro,
+};
+
+fn bind(d: &Dispatcher) -> Bind {
+    Bind {
+        instance: Arc::from("headroom"),
+        max_inflight_cap: 64,
+        sink: Arc::new(NoSink),
+        dispatcher: d.adopter(),
+        conns: ConnTable::NoNeeds,
     }
-    candidate
 }
 
-/// A synthetic log-dump line set: many segments, mostly noise, one load-bearing ERROR — realistic
-/// enough for BM25 relevance scoring to actually distinguish signal from noise (unlike a toy
-/// 2-word string, which TextCrusher passes through unchanged).
+/// The linked door, bound on `d`.
+fn linked(d: &Dispatcher) -> Plugin<Hook> {
+    let row = LinkedRow::of_macro(busbar_hook_headroom::linked::MACRO_DOOR)
+        .expect("the door states itself");
+    load_linked::<Hook>(&row, bind(d)).expect("the door loads")
+}
+
+/// This crate's dropped-in image, the cdylib `cargo test` builds, admitted against the Statement the
+/// linked door renders. A missing artifact is a failure, never a skip: this test IS the dropped-in
+/// door's proof.
+fn dropped(d: &Dispatcher) -> Plugin<Hook> {
+    let path = busbar_plugin_loader::conformance::cdylib_of("busbar_hook_headroom");
+    let stated = rendering_of_macro(busbar_hook_headroom::linked::MACRO_DOOR)
+        .expect("the door renders its Statement");
+    load_dropped::<Hook>(&path, &stated, bind(d)).expect("the dropped door loads")
+}
+
+/// `open` over `settings`: its outcome.
+fn open(p: &Plugin<Hook>, settings: &str) -> Outcome {
+    let mut f = Frame::new(
+        OpenIn {
+            head: in_head(),
+            host: std::ptr::null(),
+            // SAFETY: `settings` outlives the call, which is the only reader of the blob.
+            settings: unsafe {
+                Blob::from_raw_parts(settings.as_ptr(), settings.len(), BLOB_JSON, 0)
+            },
+            secrets: std::ptr::null(),
+            secrets_len: 0,
+            generation: 1,
+            err_buf: std::ptr::null_mut(),
+            err_cap: 0,
+        },
+        OpenOut {
+            head: out_head(),
+            instance: std::ptr::null_mut(),
+            err_len: 0,
+        },
+    );
+    p.call(life::OPEN, &mut f).outcome
+}
+
+/// A synthetic log-dump line set: many segments, mostly noise, one load-bearing ERROR, realistic
+/// enough for BM25 relevance scoring to actually distinguish signal from noise.
 fn log_dump(lines: usize) -> String {
     let mut s = String::new();
     for i in 0..lines {
@@ -75,145 +93,67 @@ fn log_dump(lines: usize) -> String {
     s
 }
 
-/// The engine-side projectors: the same tiny fail-closed shims the loader's own hook test uses,
-/// standing in for the engine's real `hooks::wire`. The `transform` projector carries the granted
-/// prompt as `request.system` + `request.messages` (`{role, text}`), and `transform_outcome` maps a
-/// `{"rewrite":{"messages":[...]}}` reply to a Rewrite (reject > rewrite > abstain).
-fn projectors() -> Arc<HookProjectors> {
-    Arc::new(HookProjectors {
-        decide: Box::new(|req, cands, _ctx| {
-            serde_json::json!({
-                "request": { "pool": req.pool },
-                "candidates": cands.iter().map(|c| serde_json::json!({"idx": c.idx})).collect::<Vec<_>>(),
-            })
-        }),
-        transform: Box::new(|req| {
-            // Project the prompt EXACTLY as the core does when prompt: rw is granted: system + the
-            // message bodies. When `req.prompt` is None (grant absent) the projection carries no
-            // prompt keys, so the gate sees nothing to compress and abstains.
-            serde_json::json!({
-                "request": {
-                    "pool": req.pool,
-                    "system": req.prompt.as_ref().and_then(|p| p.system.as_ref().map(|s| s.as_ref().to_string())),
-                    "messages": req.prompt.as_ref().map(|p| {
-                        p.messages.iter().map(|(r, t)| {
-                            serde_json::json!({"role": r.as_ref(), "text": t.as_ref()})
-                        }).collect::<Vec<_>>()
-                    }),
-                }
-            })
-        }),
-        normalize: Box::new(|v, cands| {
-            let Some(order) = v.get("order").and_then(|o| o.as_array()) else {
-                return Ok(RoutingDecision::Abstain);
-            };
-            let valid: std::collections::HashSet<usize> = cands.iter().map(|c| c.idx).collect();
-            Ok(RoutingDecision::from_ranked(
-                order.iter().filter_map(|x| x.as_u64().map(|x| x as usize)),
-                &valid,
-            ))
-        }),
-        transform_outcome: Box::new(|v| {
-            match v
-                .get("rewrite")
-                .and_then(|r| r.get("messages"))
-                .and_then(|m| m.as_array())
-            {
-                Some(msgs) if !msgs.is_empty() => {
-                    TransformOutcome::Rewrite(busbar_contract::hooks::RewriteReply {
-                        messages: msgs.clone(),
-                        tools: Vec::new(),
-                    })
-                }
-                _ => TransformOutcome::Abstain,
-            }
-        }),
-        status: Box::new(|v| {
-            v.get("status").map(|s| busbar_contract::hooks::HookStatus {
-                settings_version: s.get("settings_version").and_then(|x| x.as_u64()),
-                settings: s.get("settings").and_then(|x| x.as_object()).cloned(),
-                metrics: s.get("metrics").and_then(|m| m.as_array()).cloned(),
-            })
-        }),
-        describe_schema: Box::new(|v| v.get("schema").cloned()),
-    })
-}
-
-/// Load the gate over the real loader seam with the given `settings` JSON.
-fn load(settings: &str) -> Arc<dyn RoutingPolicy> {
-    let path = plugin_path().expect("headroom-hook cdylib built under --workspace");
-    let bytes = std::fs::read(&path).expect("read headroom-hook cdylib");
-    load_hook_from_bytes(
-        &bytes,
-        settings,
-        "headroom",
-        "hook",
-        "headroom",
-        projectors(),
-    )
-    .expect("load the headroom-hook plugin over the ABI")
-}
-
-/// A request with a MULTI-message, realistic history (grant given): the projector carries system +
-/// every message body. `run_transform` needs >= 2 messages (history + ask) to have anything to
-/// compress, and TextCrusher needs a real multi-segment body to meaningfully shrink — a log dump,
-/// not a toy string.
-fn req_with_history(history: String, ask: &str) -> RoutingRequest<'static> {
-    let total_chars = history.len() + ask.len();
+/// A request carrying `messages` as the granted prompt (`None` = grant absent).
+fn request(id: u64, messages: Option<Vec<String>>) -> RoutingRequest<'static> {
+    let total_chars = messages
+        .as_ref()
+        .map_or(0, |m| m.iter().map(String::len).sum());
     RoutingRequest {
-        // A DISTINCT non-zero correlation id per fixture (core stamps a real per-request `u64` at
-        // ingress; `0` is what an unstamped/defaulted projection looks like). Nothing asserts on it
-        // today — these projectors don't carry it onto the wire — but the fixture should look like a
-        // real request, so if the projection ever grows the id the two fixtures stay tellable apart.
-        request_id: 1001,
+        request_id: id,
         pool: "p",
         ingress_protocol: "anthropic",
         requested_model: None,
-        message_count: 2,
+        message_count: messages.as_ref().map_or(0, Vec::len),
         tool_count: 0,
         has_tools: false,
         total_chars,
         system_chars: 0,
         max_tokens: None,
         stream: false,
-        prompt: Some(busbar_contract::hooks::PromptProjection {
+        prompt: messages.map(|m| PromptProjection {
             system: None,
-            messages: vec![
-                ("user".into(), history.into()),
-                ("user".into(), ask.to_string().into()),
-            ],
+            messages: m.into_iter().map(|t| ("user".into(), t.into())).collect(),
         }),
         identity: None,
-        // The DEFAULT (empty) declared-signal bag: this gate declares no request-phase signals, so
-        // the engine hands it exactly this — an empty bag — on every real request, and the gate's
-        // behaviour on that default path is what these tests assert.
         signals: Default::default(),
+        session: None,
     }
 }
 
-/// A request with NO prompt (grant absent): the projector carries no prompt keys → the gate abstains.
-fn req_without_prompt() -> RoutingRequest<'static> {
-    RoutingRequest {
-        request_id: 1002,
+fn history() -> String {
+    format!("{}{}", log_dump(40), log_dump(40))
+}
+
+const ASK: &str = "why did the deployment fail";
+
+fn ctx() -> RoutingContext<'static> {
+    RoutingContext {
         pool: "p",
-        ingress_protocol: "anthropic",
-        requested_model: None,
-        message_count: 1,
-        tool_count: 0,
-        has_tools: false,
-        total_chars: 0,
-        system_chars: 0,
-        max_tokens: None,
-        stream: false,
-        prompt: None,
-        identity: None,
-        signals: Default::default(),
+        budget_remaining: None,
+        budget: &[],
     }
 }
 
-fn cand(idx: usize) -> Candidate<'static> {
-    Candidate {
-        idx,
+/// One `transform` over `req`: its outcome, verbs and the rewrite bytes it wrote. A short answer is
+/// re-called ONCE over the buffers it named, as the host does.
+fn transform(p: &Plugin<Hook>, req: &RoutingRequest<'_>) -> (Outcome, u32, Vec<u8>) {
+    let mut frame = DecideFrame::first(DecideView::build(req, &[], &ctx()));
+    for _ in 0..2 {
+        let mut f = Frame::new(frame.input(), blank_out::<TransformOut>());
+        let outcome = p.call(slot::TRANSFORM, &mut f).outcome;
+        if outcome == Outcome::Failed {
+            frame = frame.regrown_transform(&f.out);
+            continue;
+        }
+        return (outcome, f.out.verbs, frame.rewrite(f.out.rewrite_written));
+    }
+    panic!("a transform that stays short after its one re-call");
+}
+
+/// One `decide` over a single candidate: its outcome and verbs.
+fn decide(p: &Plugin<Hook>, req: &RoutingRequest<'_>) -> (Outcome, u32) {
+    let cand = Candidate {
+        idx: 0,
         model: "m",
         provider: "prov",
         weight: 1,
@@ -225,179 +165,126 @@ fn cand(idx: usize) -> Candidate<'static> {
         available_concurrency: 1,
         budget_remaining: None,
         rate_headroom: None,
-        // Candidate-phase declared signals: empty, same reason as the request bag above.
         signals: Default::default(),
+    };
+    let frame = DecideFrame::first(DecideView::build(req, &[cand], &ctx()));
+    let mut f = Frame::new(frame.input(), blank_out::<DecideOut>());
+    let outcome = p.call(slot::DECIDE, &mut f).outcome;
+    (outcome, f.out.verbs)
+}
+
+/// Both doors, each on a dispatcher of its own, opened over `settings`.
+fn both(settings: &str, check: impl Fn(&str, &Plugin<Hook>)) {
+    for (door, load) in [
+        ("linked", linked as fn(&Dispatcher) -> Plugin<Hook>),
+        ("dropped in", dropped),
+    ] {
+        let d = Dispatcher::new(DispatchConfig::default());
+        let p = load(&d);
+        assert_eq!(open(&p, settings), Outcome::Ready, "{door}: open");
+        check(door, &p);
     }
 }
 
-fn ctx() -> RoutingContext<'static> {
-    RoutingContext {
-        pool: "p",
-        budget_remaining: None,
-        budget: &[],
-    }
+/// END-TO-END: `transform` of a realistic compressible history (grant given) is a rewrite carrying
+/// the shrunk message bodies in BODY form (`{"role","content"}`: the deliberate asymmetry from the
+/// old socket hook, input is read from `text`, output is emitted as `content`).
+#[test]
+fn transform_compresses_granted_history() {
+    both("{}", |door, p| {
+        let history = history();
+        let req = request(1001, Some(vec![history.clone(), ASK.to_string()]));
+        let (outcome, verbs, bytes) = transform(p, &req);
+        assert_eq!(outcome, Outcome::Ready, "{door}");
+        assert_eq!(verbs, VERB_REWRITE, "{door}");
+        let rw: serde_json::Value = serde_json::from_slice(&bytes).expect("the rewrite is JSON");
+        let messages = rw["messages"].as_array().expect("messages");
+        assert_eq!(messages.len(), 2, "{door}");
+        assert_eq!(messages[1]["content"], ASK, "{door}");
+        let first = messages[0]["content"].as_str().expect("content");
+        assert!(first.contains("ERROR"), "{door}");
+        assert!(
+            messages[0].get("text").is_none(),
+            "{door}: reply must be BODY form (content), not projection form (text)"
+        );
+        assert!(
+            first.len() < history.len(),
+            "{door}: the history must shrink"
+        );
+    });
 }
 
-const BUDGET: Duration = Duration::from_secs(5);
-
-/// END-TO-END: load the gate, `transform` a realistic compressible history (grant given) → a
-/// Rewrite carrying the shrunk message bodies in BODY form (`{"role","content"}` — the deliberate
-/// asymmetry from the old socket hook: input is read from `text`, output is emitted as `content`).
-#[tokio::test]
-async fn transform_compresses_granted_history() {
-    if plugin_path().is_none() {
-        eprintln!("skip: headroom-hook cdylib not built (run under --workspace)");
-        return;
-    }
-    let policy = load("{}");
-    let history = format!("{}{}", log_dump(40), log_dump(40));
-    let req = req_with_history(history.clone(), "why did the deployment fail");
-    match policy.transform(&req, BUDGET).await {
-        TransformOutcome::Rewrite(rw) => {
-            assert_eq!(rw.messages.len(), 2);
-            assert_eq!(rw.messages[1]["content"], "why did the deployment fail");
-            assert!(
-                rw.messages[0]["content"]
-                    .as_str()
-                    .unwrap()
-                    .contains("ERROR")
-            );
-            assert!(
-                rw.messages[0].get("text").is_none(),
-                "reply must be BODY form (content), not projection form (text)"
-            );
-            assert!(
-                rw.messages[0]["content"].as_str().unwrap().len() < history.len(),
-                "the history must actually shrink"
-            );
-        }
-        other => panic!("expected Rewrite, got {other:?}"),
-    }
+/// `transform` of an already-tight prompt abstains (nothing to compress; the original body proceeds).
+#[test]
+fn transform_abstains_when_nothing_to_compress() {
+    both("{}", |door, p| {
+        let req = request(
+            1003,
+            Some(vec!["hi".to_string(), "how are you".to_string()]),
+        );
+        let (outcome, verbs, _) = transform(p, &req);
+        assert_eq!((outcome, verbs), (Outcome::Ready, VERB_ABSTAIN), "{door}");
+    });
 }
 
-/// `transform` of an already-tight prompt → Abstain (nothing to compress; the original body proceeds).
-#[tokio::test]
-async fn transform_abstains_when_nothing_to_compress() {
-    if plugin_path().is_none() {
-        return;
-    }
-    let policy = load("{}");
-    let req = req_with_history("hi".to_string(), "how are you");
-    assert!(matches!(
-        policy.transform(&req, BUDGET).await,
-        TransformOutcome::Abstain
-    ));
-}
-
-/// `transform` with NO prompt projected (operator grant absent) → Abstain. The gate can never coerce
+/// `transform` with NO prompt projected (operator grant absent) abstains. The gate can never coerce
 /// content: without the projection it simply has nothing to rewrite.
-#[tokio::test]
-async fn transform_abstains_without_grant() {
-    if plugin_path().is_none() {
-        return;
-    }
-    let policy = load("{}");
-    assert!(matches!(
-        policy.transform(&req_without_prompt(), BUDGET).await,
-        TransformOutcome::Abstain
-    ));
+#[test]
+fn transform_abstains_without_grant() {
+    both("{}", |door, p| {
+        let (outcome, verbs, _) = transform(p, &request(1002, None));
+        assert_eq!((outcome, verbs), (Outcome::Ready, VERB_ABSTAIN), "{door}");
+    });
 }
 
-/// Abstain when `min_savings_pct` is pushed to 100 via `configure` — even a real, shrinking history
-/// abstains once the savings bar is unreachable.
-#[tokio::test]
-async fn transform_abstains_when_min_savings_unreachable() {
-    if plugin_path().is_none() {
-        return;
-    }
-    let policy = load("{}");
-    let mut settings = serde_json::Map::new();
-    settings.insert("min_savings_pct".into(), serde_json::json!(100.0));
-    policy
-        .configure("headroom", &settings, 1, BUDGET)
-        .await
-        .expect("a well-formed configure push acks");
-
-    let history = format!("{}{}", log_dump(40), log_dump(40));
-    let req = req_with_history(history, "why did the deployment fail");
-    assert!(matches!(
-        policy.transform(&req, BUDGET).await,
-        TransformOutcome::Abstain
-    ));
+/// Abstain when `min_savings_pct` is 100: even a real, shrinking history abstains once the savings
+/// bar is unreachable. This is also the RED arm of the both-ways comparison: the same history over
+/// the same door, opened differently, is not the same gate.
+#[test]
+fn transform_abstains_when_min_savings_unreachable() {
+    both(r#"{"min_savings_pct": 100.0}"#, |door, p| {
+        let req = request(1004, Some(vec![history(), ASK.to_string()]));
+        let (outcome, verbs, _) = transform(p, &req);
+        assert_eq!((outcome, verbs), (Outcome::Ready, VERB_ABSTAIN), "{door}");
+    });
 }
 
-/// `decide` abstains over the seam (the gate ranks nothing).
-#[tokio::test]
-async fn decide_abstains() {
-    if plugin_path().is_none() {
-        return;
-    }
-    let policy = load("{}");
-    let d = policy
-        .decide(
-            &req_with_history("hi".to_string(), "x"),
-            &[cand(0)],
-            &ctx(),
-            BUDGET,
-        )
-        .await
-        .expect("decide ok");
-    assert_eq!(d, RoutingDecision::Abstain);
+/// `decide` abstains over the door (the gate ranks nothing).
+#[test]
+fn decide_abstains() {
+    both("{}", |door, p| {
+        let req = request(1005, Some(vec!["hi".to_string(), "x".to_string()]));
+        assert_eq!(decide(p, &req), (Outcome::Ready, VERB_ABSTAIN), "{door}");
+    });
 }
 
-/// `describe` returns the settings schema + dashboard envelope; `status` reports observed settings +
-/// Headroom-named metrics after a real compressing transform (tokens_saved > 0), with no prompt
-/// content surfaced.
-#[tokio::test]
-async fn describe_and_status_over_the_seam() {
-    if plugin_path().is_none() {
-        return;
+/// A malformed settings document, an unknown key and an out-of-range value each fail the open
+/// through both doors (fail closed: better a loud load failure than a silently mis-parsed knob).
+#[test]
+fn open_refuses_bad_settings() {
+    for door in [linked as fn(&Dispatcher) -> Plugin<Hook>, dropped] {
+        let d = Dispatcher::new(DispatchConfig::default());
+        for bad in [
+            "{ not json",
+            r#"{"bogus_knob": 1}"#,
+            r#"{"target_ratio": 2.0}"#,
+        ] {
+            assert_ne!(open(&door(&d), bad), Outcome::Ready, "{bad}");
+        }
     }
-    let policy = load(r#"{"target_ratio":0.4}"#);
-    let schema = policy.describe(BUDGET).await.expect("describe schema");
-    assert_eq!(schema["type"], "object");
-    assert!(schema["properties"]["target_ratio"].is_object());
+}
 
-    // Run a real compressing transform so status has something honest to report.
-    let history = format!("{}{}", log_dump(40), log_dump(40));
-    let req = req_with_history(history, "why did the deployment fail");
-    match policy.transform(&req, BUDGET).await {
-        TransformOutcome::Rewrite(_) => {}
-        other => panic!("expected Rewrite to drive status, got {other:?}"),
-    }
-
-    let status = policy.status(BUDGET).await.expect("status");
-    let settings = status.settings.expect("status settings");
-    assert_eq!(settings.get("target_ratio").unwrap(), 0.4);
-    let metrics = status.metrics.expect("metrics");
-    let saved = metrics
-        .iter()
-        .find(|m| m["name"] == "headroom_tokens_saved_total")
-        .expect("headroom_tokens_saved_total metric");
+/// The linked row states the name the shipped tarball's manifest does (`release.yml`
+/// `manifest_name`), so config `module: busbar-hook-headroom` resolves on a build that links this
+/// crate.
+#[test]
+fn linked_row_states_the_shipped_manifest_name() {
+    let stated = rendering_of_macro(busbar_hook_headroom::linked::MACRO_DOOR)
+        .expect("the door renders its Statement");
+    let name = busbar_hook_headroom::NAME.as_bytes();
+    assert_eq!(name, b"busbar-hook-headroom");
     assert!(
-        saved["value"].as_u64().unwrap() > 0,
-        "compression saved tokens"
-    );
-}
-
-/// `configure` over the seam acks a well-formed settings push and NACKs a malformed one.
-#[tokio::test]
-async fn configure_acks_and_nacks_over_the_seam() {
-    if plugin_path().is_none() {
-        return;
-    }
-    let policy = load("{}");
-    let mut good = serde_json::Map::new();
-    good.insert("target_ratio".into(), serde_json::json!(0.3));
-    policy
-        .configure("headroom", &good, 2, BUDGET)
-        .await
-        .expect("a well-formed settings push acks");
-
-    let mut bad = serde_json::Map::new();
-    bad.insert("target_ratio".into(), serde_json::json!(2.0));
-    assert!(
-        policy.configure("headroom", &bad, 3, BUDGET).await.is_err(),
-        "an out-of-range target_ratio must NACK (malformed push does not commit)"
+        stated.windows(name.len()).any(|w| w == name),
+        "the Statement's rendering names the plugin"
     );
 }
