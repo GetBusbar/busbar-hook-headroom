@@ -1,47 +1,23 @@
-[package]
-name = "busbar-hook-headroom"
-version = "2.0.22"
+# SPDX-License-Identifier: Apache-2.0
+#
+# A twin repo (every plugin repo is one): this workspace is exactly two crates, the logic (the rlib a
+# busbar build links; its only public item is `door`) and the thin cdylib that packages it as a
+# droppable `kind: hook` plugin (crate `busbar-hook-headroom-plugin`). Its busbar dependencies are
+# busbar-contract and, dev-only for the both-ways conformance test, busbar-plugin-loader: git
+# dependencies on GetBusbar/busbar at the pin in `.busbar-ref`.
+[workspace]
+resolver = "2"
+members = [
+    "hook-headroom",
+    "hook-headroom-plugin",
+]
+
+[workspace.package]
 edition = "2024"
-publish = false
-description = "busbar first-party kind:hook plugin (dlopen cdylib): compresses LLM chat history with the real headroom-core BM25 TextCrusher engine as a prompt:rw rewrite gate."
 license = "Apache-2.0"
+publish = false
+repository = "https://github.com/GetBusbar/busbar-hook-headroom"
 
-[lib]
-crate-type = ["cdylib", "rlib"]
-
-[dependencies]
-# headroom-core with `default-features = false` — the lexical (BM25 TextCrusher) build, with the
-# ONNX stack (ort/fastembed/magika) feature-gated OUT. This hook only needs TextCrusher, so the
-# lexical build is ~7x smaller (29MB -> ~3MB) and avoids the ONNX-in-distroless slow path. The
-# `ml`-feature gate landed UPSTREAM in headroomlabs-ai/headroom#2165 (merged 2026-07-15), so we pin
-# to the upstream merge commit — the fork is retired. The gate is not in a release yet (latest is
-# v0.33.0, pre-merge); the docker CI (see .github/workflows/headroom-release-watch.yml) re-pins to
-# the first upstream RELEASE tag that contains the gate and rebuilds. The pin protects builds.
-headroom-core = { git = "https://github.com/headroomlabs-ai/headroom", tag = "v0.38.0", default-features = false }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-# How the gate logs: the door's call capture turns a `tracing` record into a diagnostic on the call's
-# reply (BUSBAR-1.6.0.md decision #85); the plugin writes no log of its own.
-tracing = "0.1"
-# The ONE busbar crate this plugin names (#40: contract only; DECISIONS #84 merged the plugin SDK into
-# it as `busbar_contract::abi::sdk`, so the hook trait, the export macro and the hook shapes all come
-# from here). A git dependency on GetBusbar/busbar pinned to the rev in `.busbar-ref` field 1; a busbar
-# build that links this crate `[patch]`es the busbar git source to its own tree, so ONE copy links.
+[workspace.dependencies]
 busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "cf5642e0a8077287c7a0065f45c31dda92192f88" }
-
-[dev-dependencies]
-# The REAL loader (dev-only, never in the shipped artifact): the door tests and busbar's published
-# conformance suite (`conformance_suite!`, the `conformance` feature) open the linked door and the
-# built cdylib through it. Same pinned rev as busbar-contract above, so one busbar source resolves.
-busbar-plugin-loader = { features = ["conformance"], git = "https://github.com/GetBusbar/busbar", rev = "cf5642e0a8077287c7a0065f45c31dda92192f88" }
-# Dev-only: the real-admin-API e2e test builds+drives an actual `busbar` process over HTTP (install
-# a signed plugin tarball via POST /api/v1/admin/plugins, mint a key, drive a real chat completion)
-# — a blocking client keeps that test synchronous, no tokio runtime needed. Same major version
-# busbar's own `busbar` crate pins, rustls-tls only, mirroring its trimmed feature set.
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-# Dev-only: base64-encodes the packed tarball into POST /api/v1/admin/plugins's JSON body.
-base64 = "0.22"
-# Dev-only: a tiny synchronous HTTP server standing in for the upstream provider, so the e2e test can
-# capture the exact request body busbar forwarded (proving the compression actually landed on the
-# wire), without needing a whole axum/tokio server stack in a blocking test.
-tiny_http = "0.12"
+busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "cf5642e0a8077287c7a0065f45c31dda92192f88" }

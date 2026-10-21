@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-hook-headroom"
+version = "2.0.22"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "busbar first-party kind:hook plugin: compresses LLM chat history with the real headroom-core BM25 TextCrusher engine as a prompt:rw rewrite gate."
+
+[lib]
+# rlib: the LINKED door, which a busbar build names as a compiled-in row. The dropped-in door is the
+# sibling `busbar-hook-headroom-plugin` cdylib, which exports this same door as its one symbol; this
+# crate exports none.
+crate-type = ["rlib"]
+
+[dependencies]
+# headroom-core with `default-features = false` — the lexical (BM25 TextCrusher) build, with the
+# ONNX stack (ort/fastembed/magika) feature-gated OUT. This hook only needs TextCrusher, so the
+# lexical build is ~7x smaller (29MB -> ~3MB) and avoids the ONNX-in-distroless slow path. The
+# `ml`-feature gate landed UPSTREAM in headroomlabs-ai/headroom#2165 (merged 2026-07-15), so we pin
+# to the upstream merge commit — the fork is retired. The gate is not in a release yet (latest is
+# v0.33.0, pre-merge); the docker CI (see .github/workflows/headroom-release-watch.yml) re-pins to
+# the first upstream RELEASE tag that contains the gate and rebuilds. The pin protects builds.
+headroom-core = { git = "https://github.com/headroomlabs-ai/headroom", tag = "v0.38.0", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# How the gate logs: the door's call capture turns a `tracing` record into a diagnostic on the call's
+# reply (BUSBAR-1.6.0.md decision #85); the plugin writes no log of its own.
+tracing = "0.1"
+# The ONE busbar crate this plugin names (#40: contract only; DECISIONS #84 merged the plugin SDK into
+# it as `busbar_contract::abi::sdk`, so the hook trait, the export macro and the hook shapes all come
+# from here). A git dependency on GetBusbar/busbar pinned to the rev in `.busbar-ref` field 1; a busbar
+# build that links this crate `[patch]`es the busbar git source to its own tree, so ONE copy links.
+busbar-contract = { workspace = true }

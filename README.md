@@ -182,7 +182,7 @@ unsigned in dev mode via `plugins.trust.allow_unsigned`):
 
 ```sh
 git clone https://github.com/GetBusbar/busbar-hook-headroom && cd busbar-hook-headroom
-cargo build --release --lib   # cdylib: target/release/libbusbar_hook_headroom.so (.dylib/.dll elsewhere)
+cargo build --release --lib -p busbar-hook-headroom-plugin   # cdylib: target/release/libbusbar_hook_headroom_plugin.so (.dylib/.dll elsewhere)
 ```
 
 ### Settings
@@ -324,7 +324,7 @@ Configured under the `headroom` module name.
 ## Build
 
 ```bash
-cargo build --release -p busbar-hook-headroom
+cargo build --release -p busbar-hook-headroom-plugin
 ```
 
 ## Tests

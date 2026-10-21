@@ -46,7 +46,7 @@
 //! OPERATOR also grants `prompt: rw`; absent that grant the payload carries no `request.messages`
 //! and this gate abstains — it can never coerce content.
 
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 
 mod compress;
 mod door;

@@ -210,7 +210,7 @@ def prep_plugin():
     sh("cargo", "build", "--release", cwd=REPO, quiet=False)
 
     ext = "dylib" if sys.platform == "darwin" else "so"
-    lib = os.path.join(REPO, "target", "release", f"libbusbar_hook_headroom.{ext}")
+    lib = os.path.join(REPO, "target", "release", f"libbusbar_hook_headroom_plugin.{ext}")
     if not os.path.exists(lib):
         sys.exit(f"expected cdylib not found: {lib} (did the release build produce it?)")
 

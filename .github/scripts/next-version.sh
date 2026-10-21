@@ -13,7 +13,7 @@
 #   * no prior v* tag (brand-new repo)  -> v<INITIAL_VERSION>   (NEVER errors — first release)
 #   * otherwise                         -> the GREATER of
 #         - the patch-bump of the highest existing v* tag, and
-#         - the root Cargo.toml [package] version (when a Cargo.toml is present)
+#         - the hook-headroom/Cargo.toml [package] version (when a Cargo.toml is present)
 #     so the result is always above every existing tag AND never below the version the crate
 #     declares. headroom-release-watch.yml bumps Cargo.toml on dev for every headroom-core update,
 #     and headroom-release-publish.yml tags that Cargo.toml version; computing from the tags alone
@@ -49,10 +49,10 @@ case "$minor" in ''|*[!0-9]*) minor=0 ;; esac
 case "$patch" in ''|*[!0-9]*) patch=0 ;; esac
 next="${major}.${minor}.$((patch + 1))"
 
-# The crate's declared version: the first `version = "X.Y.Z"` of the root Cargo.toml's [package].
+# The crate's declared version: the first `version = "X.Y.Z"` of hook-headroom/Cargo.toml's [package].
 declared=""
-if [ -f Cargo.toml ]; then
-  declared="$(awk '/^\[package\]/{p=1; next} /^\[/{p=0} p && /^version *= *"/{gsub(/.*= *"|".*/, ""); print; exit}' Cargo.toml)"
+if [ -f hook-headroom/Cargo.toml ]; then
+  declared="$(awk '/^\[package\]/{p=1; next} /^\[/{p=0} p && /^version *= *"/{gsub(/.*= *"|".*/, ""); print; exit}' hook-headroom/Cargo.toml)"
 fi
 if [[ "$declared" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
    && [ "$(printf '%s\n%s\n' "$next" "$declared" | sort -V | tail -1)" = "$declared" ]; then

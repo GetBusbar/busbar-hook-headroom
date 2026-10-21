@@ -188,8 +188,8 @@ jobs:
               cp target/pgo/release/busbar /bb/busbar
               cp target/pgo/release/busbar.pgo-verified /bb/busbar.pgo-verified
               cd /src/headroom-hook
-              RUSTFLAGS="-C target-feature=-crt-static" cargo build --release --locked --lib -p busbar-hook-headroom
-              cp target/release/libbusbar_hook_headroom.so /libs/libbusbar_hook_headroom.so
+              RUSTFLAGS="-C target-feature=-crt-static" cargo build --release --locked --lib -p busbar-hook-headroom-plugin
+              cp target/release/libbusbar_hook_headroom_plugin.so /libs/libbusbar_hook_headroom_plugin.so
               cp /usr/lib/libstdc++.so.6 /usr/lib/libgcc_s.so.1 /libs/
               # BOTH musl names as REAL files: ld-musl-<arch>.so.1 is busbar PT_INTERP (without it
               # the kernel cannot exec the binary at all and reports a misleading "permission
@@ -288,7 +288,7 @@ jobs:
             unsigned_flag="--allow-unsigned"
           fi
           busbar/target/release/busbar-plugin-pack pack \
-            --lib "headroom-libs/libbusbar_hook_headroom.so" \
+            --lib "headroom-libs/libbusbar_hook_headroom_plugin.so" \
             --name "busbar-hook-headroom" --alias "headroom" --kind hook \
             --version "$ver" --publisher busbar \
             --needs-prompt rw \

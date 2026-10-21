@@ -67,7 +67,7 @@ fn plugin_path() -> Option<PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
-        let name = busbar_plugin_loader::plugin_library_filename("busbar_hook_headroom");
+        let name = busbar_plugin_loader::plugin_library_filename("busbar_hook_headroom_plugin");
         let uplifted = profile_dir.join(&name);
         let raw = profile_dir.join("deps").join(&name);
         [uplifted, raw]
@@ -97,7 +97,7 @@ fn plugin_path() -> Option<PathBuf> {
 fn busbar_root() -> PathBuf {
     std::env::var_os("BUSBAR_CHECKOUT")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../busbar"))
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../busbar"))
 }
 
 /// Where the nested busbar build puts its binaries: `$BUSBAR_TARGET_DIR` when set, else the

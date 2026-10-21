@@ -7,7 +7,8 @@
 //! `declares` document (BUSBAR-1.6.0.md l.246): `{"hook": {"orders": false}}`, since the gate's
 //! `decide` always abstains.
 //!
-//! The built `cdylib` exports this same door as its one symbol, `busbar_plugin_door`.
+//! The sibling `busbar-hook-headroom-plugin` cdylib exports this same door as its one symbol,
+//! `busbar_plugin_door`.
 
 use busbar_contract::abi::hook::{CLASS_GATE, PROMPT_RW, Tail, USER_NO};
 use busbar_contract::abi::mechanism::door::Statement;
@@ -54,11 +55,4 @@ impl HookOpen for Open {
 busbar_contract::hook_door! {
     open: Open,
     statement: STATEMENT,
-}
-
-/// The exported door: this image's ONE symbol, `busbar_plugin_door`, forwards to [`door`]. The
-/// macro's `#[unsafe(no_mangle)]` is the one reviewed exemption from `deny(unsafe_code)`.
-#[allow(unsafe_code)]
-mod exported {
-    busbar_contract::export_door!(crate::door);
 }

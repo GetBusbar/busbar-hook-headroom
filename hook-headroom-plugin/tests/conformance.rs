@@ -21,6 +21,6 @@ fn loaded() -> busbar_plugin_loader::dispatch::LoadedDoor {
 
 busbar_plugin_loader::conformance_suite! {
     loaded: loaded(),
-    cdylib: "busbar_hook_headroom",
+    cdylib: "busbar_hook_headroom_plugin",
     inputs: include_str!("conformance.json"),
 }

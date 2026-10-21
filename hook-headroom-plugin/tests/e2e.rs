@@ -52,7 +52,7 @@ fn linked(d: &Dispatcher) -> Plugin<Hook> {
 /// linked door renders. A missing artifact is a failure, never a skip: this test IS the dropped-in
 /// door's proof.
 fn dropped(d: &Dispatcher) -> Plugin<Hook> {
-    let path = busbar_plugin_loader::conformance::cdylib_of("busbar_hook_headroom");
+    let path = busbar_plugin_loader::conformance::cdylib_of("busbar_hook_headroom_plugin");
     let stated = rendering_of_loaded(loaded()).expect("the door renders its Statement");
     load_dropped::<Hook>(&path, &stated, bind(d)).expect("the dropped door loads")
 }

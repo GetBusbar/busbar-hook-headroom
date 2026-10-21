@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-hook-headroom-plugin"
+version = "2.0.22"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "First-party signed kind:hook plugin cdylib: the headroom compression gate, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+
+[lib]
+# cdylib: the DROPPED-IN door (a signed tarball in `plugins/`), exporting `busbar_plugin_door`.
+# rlib: what `cargo test` links, and what makes `cargo test` emit the cdylib the conformance test
+# loads (a cdylib-only package builds a trivial test harness and never produces the library).
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# THE LOGIC, same repo: its `door` is the door this image exports.
+busbar-hook-headroom = { path = "../hook-headroom" }
+busbar-contract = { workspace = true }
+
+[dev-dependencies]
+# The REAL loader (dev-only, never in the shipped artifact): the door tests and busbar's published
+# conformance suite (`conformance_suite!`, the `conformance` feature) open the linked door and the
+# built cdylib through it. Same pinned rev as busbar-contract above, so one busbar source resolves.
+busbar-plugin-loader = { workspace = true, features = ["conformance"] }
+# Dev-only: the real-admin-API e2e test builds+drives an actual `busbar` process over HTTP (install
+# a signed plugin tarball via POST /api/v1/admin/plugins, mint a key, drive a real chat completion)
+# — a blocking client keeps that test synchronous, no tokio runtime needed. Same major version
+# busbar's own `busbar` crate pins, rustls-tls only, mirroring its trimmed feature set.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+# Dev-only: base64-encodes the packed tarball into POST /api/v1/admin/plugins's JSON body.
+base64 = "0.22"
+# Dev-only: a tiny synchronous HTTP server standing in for the upstream provider, so the e2e test can
+# capture the exact request body busbar forwarded (proving the compression actually landed on the
+# wire), without needing a whole axum/tokio server stack in a blocking test.
+tiny_http = "0.12"
+serde_json = "1"

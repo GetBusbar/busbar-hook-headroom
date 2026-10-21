@@ -32,7 +32,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          new="$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)"
+          new="$(grep -m1 '^version = ' hook-headroom/Cargo.toml | cut -d'"' -f2)"
           tag="v${new}"
           if git rev-parse "$tag" >/dev/null 2>&1; then
             echo "::notice::$tag already exists, nothing to do (probably a non-version-bump PR merged to main)"
