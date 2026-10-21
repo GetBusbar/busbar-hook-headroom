@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! End-to-end coverage of the `headroom` compression gate over busbar's REAL loader, through BOTH
-//! doors: the LINKED door (`linked::MACRO_DOOR`, what a busbar build that compiles this crate in
+//! doors: the LINKED door (`door`, what a busbar build that compiles this crate in
 //! registers) and the DROPPED-IN door (this crate's built cdylib). Each is admitted through the one
 //! loader, opened over settings, and driven with `transform` over the host's view of a granted
 //! prompt, whose rewrite compresses with the REAL `headroom-core` BM25 `TextCrusher` engine.
@@ -21,8 +21,8 @@ use busbar_contract::abi::sdk::door::blank_out;
 use busbar_contract::hooks::{Candidate, PromptProjection, RoutingContext, RoutingRequest};
 use busbar_plugin_loader::dispatch::kinds::hook::Hook;
 use busbar_plugin_loader::dispatch::{
-    Bind, ConnTable, DispatchConfig, Dispatcher, Frame, LinkedRow, NoSink, Plugin, in_head,
-    load_dropped, load_linked, out_head, rendering_of_macro,
+    Bind, ConnTable, DispatchConfig, Dispatcher, Frame, LinkedRow, LoadedDoor, NoSink, Plugin,
+    in_head, load_dropped, load_linked, out_head, rendering_of_loaded,
 };
 
 fn bind(d: &Dispatcher) -> Bind {
@@ -35,10 +35,16 @@ fn bind(d: &Dispatcher) -> Bind {
     }
 }
 
+/// This crate's own `door`, as the loader names a compiled-in one.
+#[allow(unused_unsafe)]
+fn loaded() -> LoadedDoor {
+    // SAFETY: `door` is this crate's own `hook_door!` entry.
+    unsafe { LoadedDoor::from_raw(busbar_hook_headroom::door) }
+}
+
 /// The linked door, bound on `d`.
 fn linked(d: &Dispatcher) -> Plugin<Hook> {
-    let row = LinkedRow::of_macro(busbar_hook_headroom::linked::MACRO_DOOR)
-        .expect("the door states itself");
+    let row = LinkedRow::of_loaded(loaded()).expect("the door states itself");
     load_linked::<Hook>(&row, bind(d)).expect("the door loads")
 }
 
@@ -47,8 +53,7 @@ fn linked(d: &Dispatcher) -> Plugin<Hook> {
 /// door's proof.
 fn dropped(d: &Dispatcher) -> Plugin<Hook> {
     let path = busbar_plugin_loader::conformance::cdylib_of("busbar_hook_headroom");
-    let stated = rendering_of_macro(busbar_hook_headroom::linked::MACRO_DOOR)
-        .expect("the door renders its Statement");
+    let stated = rendering_of_loaded(loaded()).expect("the door renders its Statement");
     load_dropped::<Hook>(&path, &stated, bind(d)).expect("the dropped door loads")
 }
 
@@ -279,12 +284,23 @@ fn open_refuses_bad_settings() {
 /// crate.
 #[test]
 fn linked_row_states_the_shipped_manifest_name() {
-    let stated = rendering_of_macro(busbar_hook_headroom::linked::MACRO_DOOR)
-        .expect("the door renders its Statement");
-    let name = busbar_hook_headroom::NAME.as_bytes();
-    assert_eq!(name, b"busbar-hook-headroom");
+    let stated = rendering_of_loaded(loaded()).expect("the door renders its Statement");
+    let name = b"busbar-hook-headroom".as_slice();
     assert!(
         stated.windows(name.len()).any(|w| w == name),
         "the Statement's rendering names the plugin"
     );
+}
+
+/// The door's Statement carries this plugin's whole `declares` document (BUSBAR-1.6.0.md l.246):
+/// the gate never orders, and says so.
+#[test]
+fn the_statement_carries_the_declares_document() {
+    let row = LinkedRow::of_loaded(loaded()).unwrap();
+    let read = busbar_contract::abi::mechanism::rendering::read(&row.statement).unwrap();
+    let declares = busbar_contract::abi::mechanism::extensions::declares(&read.extensions.bytes)
+        .expect("the Statement carries the declares document");
+    assert_eq!(declares, &include_bytes!("../declares.json")[..]);
+    let doc: serde_json::Value = serde_json::from_slice(declares).unwrap();
+    assert_eq!(doc["hook"]["orders"], false);
 }

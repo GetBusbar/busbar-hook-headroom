@@ -1,4 +1,5 @@
 use super::*;
+use crate::door::NAME;
 use std::sync::Arc;
 
 /// `open` accepts empty/missing config and a valid settings map; a malformed config or an

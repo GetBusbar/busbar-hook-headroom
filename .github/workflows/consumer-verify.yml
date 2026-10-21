@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   consumer:
-    uses: GetBusbar/busbar/.github/workflows/plugin-consumer-verify.yml@82a8779dc8e89623b27403ef25aa68313197e76b
+    uses: GetBusbar/busbar/.github/workflows/plugin-consumer-verify.yml@cf5642e0a8077287c7a0065f45c31dda92192f88
     with:
       version: ${{ inputs.version || '' }}
       asset_prefix: busbar-hook-headroom
