@@ -7,10 +7,10 @@
 //!
 //! Formerly a standalone Unix-socket hook service (`main.rs`, now deleted) speaking busbar's
 //! 5-message wire (`configure`/`describe`/`decide`/`transform`/`notify`) as newline-delimited JSON
-//! over a kept-alive connection. Now a `cdylib` implementing the plugin SDK's [`HookHandler`]
-//! trait directly — the wire-line dispatch is gone (the engine calls in-process through the dlopen
-//! ABI), but the compression logic in [`compress`] is a straight port of the old socket hook's
-//! `handle_line`/`build_status`/`apply_settings`.
+//! over a kept-alive connection. Now a `cdylib` whose door is the hook kind's (`hook_door!`, over
+//! `plugin_door!`; see [`door`]) — the wire-line dispatch is gone (the engine calls in-process
+//! through the plugin ABI), but the compression logic in [`compress`] is a straight port of the old
+//! socket hook's `handle_line`/`build_status`/`apply_settings`.
 //!
 //! ## Ops
 //!
@@ -38,21 +38,27 @@
 //! and this gate abstains — it can never coerce content.
 
 mod compress;
+pub mod door;
 
-use busbar_contract::abi::sdk::HookHandler;
 use compress::{Knobs, Metrics, build_status, describe_reply, run_transform};
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 use std::sync::{Mutex, RwLock};
 
 /// The `headroom-core` git ref this binary was built against (tag when pinned to a release, else a
 /// short commit) — stamped by `build.rs` from `Cargo.lock`.
 const HEADROOM_CORE_REF: &str = env!("HEADROOM_CORE_REF");
 
-/// The live gate: compression knobs behind an `RwLock` (the SDK's [`HookHandler`] methods take
+/// The package name a signed tarball of this plugin states (`manifest.name`), and its Statement's.
+pub const NAME: &str = "busbar-hook-headroom";
+
+/// The alias a hook reference names this plugin by (`module: headroom`).
+pub const ALIAS: &str = "headroom";
+
+/// The live gate: compression knobs behind an `RwLock` (the SDK's `Hook` methods take
 /// `&self` — the engine may drive `transform`/`configure` concurrently — so committing a `configure`
 /// push is interior mutability, mirroring the old socket hook's `Arc<RwLock<Knobs>>`) plus the
 /// process-wide per-pool metrics accumulator.
-struct Headroom {
+pub struct Headroom {
     knobs: RwLock<Knobs>,
     metrics: Mutex<Metrics>,
 }
@@ -66,24 +72,19 @@ impl Headroom {
     }
 }
 
-impl HookHandler for Headroom {
+/// The gate's ops over the 1.5.5 JSON documents; [`door`] puts them on the hook kind's door.
+/// `decide` and `notify` are the SDK's defaults there (ABSTAIN / nothing): Headroom ranks nothing
+/// and is not a tap.
+impl Headroom {
     /// `transform` — compress the granted history, keep the ask. See [`compress::run_transform`].
-    fn transform(&self, payload: &Value) -> Value {
+    pub fn transform(&self, payload: &Value) -> Value {
         run_transform(payload, &self.knobs, &self.metrics)
     }
-
-    /// `decide` — ABSTAIN. Headroom ranks nothing; it is a rewrite gate, not a router.
-    fn decide(&self, _payload: &Value) -> Value {
-        json!({})
-    }
-
-    /// `notify` — no-op. Headroom is not a tap; it observes nothing out of band.
-    fn notify(&self, _payload: &Value) {}
 
     /// `configure` — apply a pushed settings map as DESIRED STATE and commit it live iff it applies
     /// cleanly; an unknown key or an out-of-shape/out-of-range value NACKs (returns `false`) and the
     /// live knobs are left untouched, matching the old wire's commit-on-ack fail-closed contract.
-    fn configure(&self, settings: &Map<String, Value>, settings_version: u64) -> bool {
+    pub fn configure(&self, settings: &Map<String, Value>, settings_version: u64) -> bool {
         match compress::apply_settings(settings) {
             Ok(mut new) => {
                 new.settings_version = settings_version;
@@ -94,21 +95,20 @@ impl HookHandler for Headroom {
                 true
             }
             Err(e) => {
-                busbar_contract::abi::sdk::hostlog::warn(&format!(
-                    "headroom: configure v{settings_version} rejected: {e}"
-                ));
+                // The call capture carries it to the plugin's log (`abi::sdk::capture`).
+                log::warn!("headroom: configure v{settings_version} rejected: {e}");
                 false
             }
         }
     }
 
     /// `describe` — the `{schema, dashboard}` self-description envelope.
-    fn describe(&self) -> Value {
+    pub fn describe(&self) -> Value {
         describe_reply()
     }
 
     /// `status` — observed settings + the metrics array, plus the `headroom-core` build ref.
-    fn status(&self) -> Value {
+    pub fn status(&self) -> Value {
         let mut reply = build_status(&self.knobs, &self.metrics);
         if let Some(status) = reply.get_mut("status").and_then(|s| s.as_object_mut()) {
             status.insert(
@@ -124,7 +124,7 @@ impl HookHandler for Headroom {
 /// shape a `configure` push carries). An empty/missing config uses the built-in defaults. A
 /// MALFORMED config (bad JSON, unknown key, out-of-range value) is a fail-closed LOAD error — better
 /// a loud load failure than a silently mis-parsed knob.
-fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
+pub fn open(cfg: &str) -> Result<Headroom, String> {
     let knobs = if cfg.trim().is_empty() {
         Knobs::default()
     } else {
@@ -133,22 +133,22 @@ fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
         compress::apply_settings(&settings)
             .map_err(|e| format!("headroom-hook: invalid settings: {e}"))?
     };
-    Ok(Box::new(Headroom::new(knobs)))
+    Ok(Headroom::new(knobs))
 }
 
-busbar_contract::abi::sdk::export_hook_plugin!(open);
+/// THE DROPPED-IN DOOR: this image's ONE symbol, `busbar_plugin_door`, forwarding to [`door::door`]
+/// (`export_door!`). The macro's `#[no_mangle]` is the only unsafe attribute in the crate.
+mod exported {
+    busbar_contract::export_door!(crate::door::door);
+}
 
-/// THE LINKED ENTRY (DECISIONS #2 rule (1)): what a busbar build that compiles this gate in registers
-/// onto the hook axis — the same row, name and alias a dropped-in signed tarball of this crate's
-/// `cdylib` states, and the boundary (`BUSBAR_COLD_ENTRY`, emitted by the one `export_hook_plugin!`
-/// above) the loader's one cold-lane load runs over. One source, both doors.
+/// THE LINKED ENTRY: what a busbar build that compiles this gate in registers onto the hook axis —
+/// the same name and alias a dropped-in signed tarball of this crate's `cdylib` states, and the same
+/// door ([`door::door`]) the tarball's `busbar_plugin_door` forwards to. One source, both doors.
 pub mod linked {
-    /// `(name, alias, boundary)`.
-    pub const HOOK: (&str, &str, &busbar_contract::abi::sdk::ColdEntry) = (
-        "busbar-hook-headroom",
-        "headroom",
-        &super::BUSBAR_COLD_ENTRY,
-    );
+    /// `(name, alias, door)`.
+    pub const HOOK: (&str, &str, busbar_contract::abi::mechanism::door::DoorFn) =
+        (super::NAME, super::ALIAS, super::door::door);
 }
 
 #[cfg(test)]

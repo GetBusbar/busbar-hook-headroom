@@ -1,0 +1,44 @@
+{
+  "settings": { "target_ratio": 0.5, "min_savings_pct": 10.0 },
+  "hook": {
+    "bad_settings": [
+      "not json",
+      "[]",
+      "{\"bogus_knob\": 1}",
+      "{\"target_ratio\": 2.0}",
+      "{\"min_savings_pct\": -1}",
+      "{\"target_ratio\": \"half\"}"
+    ],
+    "order_cap": 2,
+    "requests": [
+      {
+        "label": "decide: the gate ranks nothing",
+        "op": "decide",
+        "candidates": [
+          { "idx": 3, "cost_per_mtok": 5.0, "available_concurrency": 2 },
+          { "idx": 9, "cost_per_mtok": 2.0, "available_concurrency": 1 },
+          { "idx": 7, "latency_ms": 90.0, "available_concurrency": 4 }
+        ],
+        "expect": { "verb": "abstain" }
+      },
+      {
+        "label": "transform: no prompt granted, nothing to rewrite",
+        "op": "transform",
+        "candidates": [],
+        "expect": { "verb": "abstain" }
+      }
+    ],
+    "refresh": {
+      "settings": { "target_ratio": 0.3, "min_savings_pct": 25.0 },
+      "request": {
+        "label": "decide: the refreshed gate still ranks nothing",
+        "op": "decide",
+        "candidates": [
+          { "idx": 9, "cost_per_mtok": 2.0, "available_concurrency": 1 },
+          { "idx": 7, "latency_ms": 90.0, "available_concurrency": 4 }
+        ],
+        "expect": { "verb": "abstain" }
+      }
+    }
+  }
+}

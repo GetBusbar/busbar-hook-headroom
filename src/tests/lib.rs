@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::json;
 
 /// `open` accepts empty/missing config and a valid settings map; a malformed config or an
 /// out-of-range/unknown-key settings map fails closed.
@@ -27,32 +28,36 @@ fn linked_row_states_the_shipped_manifest_name() {
     assert_eq!(linked::HOOK.1, "headroom");
 }
 
-/// Records the capturing sink received (level, message). Process-global because the SDK's host log
-/// sink is process-global.
-static CAPTURED: Mutex<Vec<(u32, String)>> = Mutex::new(Vec::new());
+/// Records the `log` logger received (level, message). Process-global because `log`'s logger is
+/// process-global: in a plugin image the door macro installs the call capture's (`LogTracer`), which
+/// carries every record onto the call's reply for the host's plugin log; this test stands in for it.
+static CAPTURED: Mutex<Vec<(log::Level, String)>> = Mutex::new(Vec::new());
 
-extern "C" fn capture_sink(_ctx: *mut std::ffi::c_void, level: u32, msg: *const u8, len: usize) {
-    // SAFETY: the SDK passes a valid (ptr, len) borrowed for this call only.
-    let s = unsafe { std::slice::from_raw_parts(msg, len) };
-    CAPTURED
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .push((level, String::from_utf8_lossy(s).into_owned()));
+struct Capture;
+
+impl log::Log for Capture {
+    fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        CAPTURED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((record.level(), record.args().to_string()));
+    }
+
+    fn flush(&self) {}
 }
 
 /// A rejected `configure` NACKs AND tells the operator why: one WARN record naming the offending
 /// setting and the validation reason.
 #[test]
 fn rejected_configure_logs_the_reason() {
-    use busbar_contract::abi::cold::log_level;
-    // SAFETY: `capture_sink` is a `'static` fn and the null ctx is never dereferenced.
-    unsafe {
-        busbar_contract::abi::sdk::hostlog::install_sink(
-            capture_sink,
-            std::ptr::null_mut(),
-            log_level::TRACE,
-        );
-    }
+    static LOGGER: Capture = Capture;
+    // Only this test installs a logger in this binary; a second install is refused, never fatal.
+    let _ = log::set_logger(&LOGGER);
+    log::set_max_level(log::LevelFilter::Trace);
     let h = Headroom::new(Knobs::default());
     let bad = json!({"target_ratio": 5});
     assert!(!h.configure(bad.as_object().unwrap(), 4242));
@@ -66,16 +71,8 @@ fn rejected_configure_logs_the_reason() {
         1,
         "exactly one record for the rejected push: {got:?}"
     );
-    assert_eq!(rec[0].0, log_level::WARN);
+    assert_eq!(rec[0].0, log::Level::Warn);
     assert!(rec[0].1.contains("target_ratio"), "{}", rec[0].1);
-}
-
-/// `decide` and `notify` are inert (Headroom is not a router or a tap).
-#[test]
-fn decide_and_notify_are_inert() {
-    let h = Headroom::new(Knobs::default());
-    assert_eq!(h.decide(&json!({})), json!({}));
-    h.notify(&json!({"anything": true})); // no panic, no effect
 }
 
 /// `configure` applies pushed settings LIVE and returns `true`/ACK on a clean apply; the next

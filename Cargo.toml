@@ -21,17 +21,23 @@ headroom-core = { git = "https://github.com/headroomlabs-ai/headroom", tag = "v0
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # The ONE busbar crate this plugin names (#40: contract only; DECISIONS #84 merged the plugin SDK into
-# it as `busbar_contract::abi::sdk`, so the hook trait, the export macro and the hook shapes all come
-# from here). A git dependency on GetBusbar/busbar pinned to the rev in `.busbar-ref` field 1; a busbar
-# build that links this crate `[patch]`es the busbar git source to its own tree, so ONE copy links.
-busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "7a5b429041752e00375e120ab1547a8928c3dee4" }
+# it as `busbar_contract::abi::sdk`, so the hook kind's door (`hook_door!`, over `plugin_door!`), the
+# export macro (`export_door!`) and the hook shapes all come from here). A git dependency on
+# GetBusbar/busbar pinned to the rev in `.busbar-ref` field 1; a busbar build that links this crate `[patch]`es the busbar git source to its own tree, so ONE copy links.
+busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "6acd5afc46969040ebd548bc3ae21feb5d979f34" }
+# A rejected `configure` push is logged through `log`: the door's call capture carries the record to
+# the plugin's own log file (`busbar_contract::abi::sdk::capture`). busbar's own workspace row.
+log = "0.4"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
 # The REAL loader (dev-only, never in the shipped artifact): the e2e and the linked/dropped-in
 # conformance tests open the built cdylib through it. Same pinned rev as busbar-contract above, so one
 # busbar source resolves.
-busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "7a5b429041752e00375e120ab1547a8928c3dee4" }
+busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "6acd5afc46969040ebd548bc3ae21feb5d979f34" }
+# `conformance`: busbar's PUBLISHED conformance suite (`tests/conformance.rs`'s `conformance_suite!`),
+# run against the busbar commit this repo pins. Dev-only, same pinned rev.
+busbar-test-kit = { git = "https://github.com/GetBusbar/busbar", rev = "6acd5afc46969040ebd548bc3ae21feb5d979f34" }
 # Dev-only: the real-admin-API e2e test builds+drives an actual `busbar` process over HTTP (install
 # a signed plugin tarball via POST /api/v1/admin/plugins, mint a key, drive a real chat completion)
 # — a blocking client keeps that test synchronous, no tokio runtime needed. Same major version

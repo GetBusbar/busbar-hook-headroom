@@ -2,20 +2,29 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! End-to-end coverage of the `headroom-hook` compression gate loaded over the REAL
-//! `busbar-plugin-loader` `open_hook` seam (`load_hook_from_bytes`) — the exact seam busbar's
-//! engine sees: an `Arc<dyn RoutingPolicy>` indistinguishable from a compiled-in policy, whose
-//! `transform` compresses the granted prompt with the REAL `headroom-core` BM25 `TextCrusher`
-//! engine, and whose reply is parsed through the engine's own fail-closed `hooks::wire`
-//! normalizers.
+//! `busbar-plugin-loader` hook seam — the exact seam busbar's engine sees: the built cdylib
+//! admitted by the one loader (`load_dropped`, against its door's own Statement rendering), bound to
+//! a real dispatcher, and opened and called as the kernel calls a hook (`hook_door::HookInstance`,
+//! the contract's `HookCalls`): every `decide`/`transform` over the host's view of the request
+//! (`DecideView`, the granted prompt included), whose `transform` compresses that prompt with the
+//! REAL `headroom-core` BM25 `TextCrusher` engine and answers through the hook kind's fixed `out`
+//! and the host's rewrite buffer.
 //!
 //! The corpus fixtures (`log_dump`) are shared with `src/tests/compress.rs`: a toy 2-word string
 //! never triggers BM25/TextCrusher's real compression path, since `TextCrusher` passes short texts
 //! (<6 segments) through unchanged.
 
-use busbar_contract::hooks::{
-    Candidate, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest, TransformOutcome,
+use busbar_contract::abi::hook::{VERB_ABSTAIN, VERB_REWRITE};
+use busbar_contract::abi::host::hook::{DecideFrame, DecideView};
+use busbar_contract::abi::mechanism::call::Outcome;
+use busbar_contract::hook_calls::{Answered, HookCalls};
+use busbar_contract::hooks::{Candidate, RoutingContext, RoutingRequest};
+use busbar_plugin_loader::dispatch::kinds::hook::Hook;
+use busbar_plugin_loader::dispatch::{
+    Bind, ConnTable, DispatchConfig, Dispatcher, NoSink, load_dropped, rendering_of,
 };
-use busbar_plugin_loader::hook::{HookProjectors, load_hook_from_bytes};
+use busbar_plugin_loader::hook_door::HookInstance;
+use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -75,83 +84,86 @@ fn log_dump(lines: usize) -> String {
     s
 }
 
-/// The engine-side projectors: the same tiny fail-closed shims the loader's own hook test uses,
-/// standing in for the engine's real `hooks::wire`. The `transform` projector carries the granted
-/// prompt as `request.system` + `request.messages` (`{role, text}`), and `transform_outcome` maps a
-/// `{"rewrite":{"messages":[...]}}` reply to a Rewrite (reject > rewrite > abstain).
-fn projectors() -> Arc<HookProjectors> {
-    Arc::new(HookProjectors {
-        decide: Box::new(|req, cands, _ctx| {
-            serde_json::json!({
-                "request": { "pool": req.pool },
-                "candidates": cands.iter().map(|c| serde_json::json!({"idx": c.idx})).collect::<Vec<_>>(),
-            })
-        }),
-        transform: Box::new(|req| {
-            // Project the prompt EXACTLY as the core does when prompt: rw is granted: system + the
-            // message bodies. When `req.prompt` is None (grant absent) the projection carries no
-            // prompt keys, so the gate sees nothing to compress and abstains.
-            serde_json::json!({
-                "request": {
-                    "pool": req.pool,
-                    "system": req.prompt.as_ref().and_then(|p| p.system.as_ref().map(|s| s.as_ref().to_string())),
-                    "messages": req.prompt.as_ref().map(|p| {
-                        p.messages.iter().map(|(r, t)| {
-                            serde_json::json!({"role": r.as_ref(), "text": t.as_ref()})
-                        }).collect::<Vec<_>>()
-                    }),
-                }
-            })
-        }),
-        normalize: Box::new(|v, cands| {
-            let Some(order) = v.get("order").and_then(|o| o.as_array()) else {
-                return Ok(RoutingDecision::Abstain);
-            };
-            let valid: std::collections::HashSet<usize> = cands.iter().map(|c| c.idx).collect();
-            Ok(RoutingDecision::from_ranked(
-                order.iter().filter_map(|x| x.as_u64().map(|x| x as usize)),
-                &valid,
-            ))
-        }),
-        transform_outcome: Box::new(|v| {
-            match v
-                .get("rewrite")
-                .and_then(|r| r.get("messages"))
-                .and_then(|m| m.as_array())
-            {
-                Some(msgs) if !msgs.is_empty() => {
-                    TransformOutcome::Rewrite(busbar_contract::hooks::RewriteReply {
-                        messages: msgs.clone(),
-                        tools: Vec::new(),
-                    })
-                }
-                _ => TransformOutcome::Abstain,
+/// What a `transform` answered, read off the hook kind's `out` and the host's rewrite buffer.
+#[derive(Debug)]
+enum Transformed {
+    /// REWRITE: the 1.5.5 rewrite JSON's `messages` (`{"messages": [...]}`).
+    Rewrite(Vec<Value>),
+    /// ABSTAIN: the original body proceeds.
+    Abstain,
+    /// Anything else (a reject, a failure, a fault), described.
+    #[allow(dead_code)]
+    Other(String),
+}
+
+/// The gate, opened over the real loader seam: the cdylib admitted by `load_dropped` on its own
+/// dispatcher, opened and called as the kernel calls a hook.
+struct Gate(HookInstance);
+
+impl Gate {
+    /// `transform` `req` (with one candidate, as a pool has).
+    async fn transform(&self, req: &RoutingRequest<'_>) -> Transformed {
+        let frame = DecideFrame::first(DecideView::build(req, &[cand(0)], &ctx()));
+        match self.0.transform(frame, BUDGET).await {
+            Answered::Answer {
+                outcome: Outcome::Ready,
+                out,
+                frame,
+                ..
+            } if out.verbs & VERB_REWRITE != 0 => {
+                let rw: Value = serde_json::from_slice(&frame.rewrite(out.rewrite_written))
+                    .expect("the rewrite crosses as JSON");
+                Transformed::Rewrite(rw["messages"].as_array().cloned().unwrap_or_default())
             }
-        }),
-        status: Box::new(|v| {
-            v.get("status").map(|s| busbar_contract::hooks::HookStatus {
-                settings_version: s.get("settings_version").and_then(|x| x.as_u64()),
-                settings: s.get("settings").and_then(|x| x.as_object()).cloned(),
-                metrics: s.get("metrics").and_then(|m| m.as_array()).cloned(),
-            })
-        }),
-        describe_schema: Box::new(|v| v.get("schema").cloned()),
-    })
+            Answered::Answer {
+                outcome: Outcome::Ready,
+                out,
+                ..
+            } if out.verbs & VERB_ABSTAIN != 0 => Transformed::Abstain,
+            other => Transformed::Other(format!("{other:?}")),
+        }
+    }
+
+    /// `configure` `settings` at `version`.
+    async fn configure(
+        &self,
+        settings: &serde_json::Map<String, Value>,
+        version: u64,
+    ) -> Result<(), String> {
+        let text = serde_json::to_string(settings).expect("settings serialize");
+        self.0.configure("headroom", &text, version, BUDGET).await
+    }
+
+    /// A leased JSON document (`status` / `describe`).
+    fn document(bytes: Option<Vec<u8>>) -> Value {
+        serde_json::from_slice(&bytes.expect("the gate answers the document"))
+            .expect("the document is JSON")
+    }
 }
 
 /// Load the gate over the real loader seam with the given `settings` JSON.
-fn load(settings: &str) -> Arc<dyn RoutingPolicy> {
+fn load(settings: &str) -> Gate {
     let path = plugin_path().expect("headroom-hook cdylib built under --workspace");
-    let bytes = std::fs::read(&path).expect("read headroom-hook cdylib");
-    load_hook_from_bytes(
-        &bytes,
-        settings,
-        "headroom",
-        "hook",
-        "headroom",
-        projectors(),
-    )
-    .expect("load the headroom-hook plugin over the ABI")
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
+        workers: 2,
+        ..Default::default()
+    }));
+    let bind = Bind {
+        instance: Arc::from("headroom-e2e"),
+        max_inflight_cap: 64,
+        sink: Arc::new(NoSink),
+        dispatcher: dispatcher.adopter(),
+        // The gate declares no need: it is served with no connection table.
+        conns: ConnTable::NoNeeds,
+    };
+    let stated = rendering_of(busbar_hook_headroom::door::door).expect("the door renders");
+    let plugin = load_dropped::<Hook>(&path, &stated, bind)
+        .expect("load the headroom-hook plugin over the ABI");
+    let instance = HookInstance::open(plugin, dispatcher, settings.as_bytes(), || {
+        Err("no rebind in this test".to_string())
+    })
+    .expect("the gate opens");
+    Gate(instance)
 }
 
 /// A request with a MULTI-message, realistic history (grant given): the projector carries system +
@@ -163,8 +175,8 @@ fn req_with_history(history: String, ask: &str) -> RoutingRequest<'static> {
     RoutingRequest {
         // A DISTINCT non-zero correlation id per fixture (core stamps a real per-request `u64` at
         // ingress; `0` is what an unstamped/defaulted projection looks like). Nothing asserts on it
-        // today — these projectors don't carry it onto the wire — but the fixture should look like a
-        // real request, so if the projection ever grows the id the two fixtures stay tellable apart.
+        // today, but the fixture should look like a real request, so the two fixtures stay
+        // tellable apart on the view the gate is handed.
         request_id: 1001,
         pool: "p",
         ingress_protocol: "anthropic",
@@ -188,6 +200,7 @@ fn req_with_history(history: String, ask: &str) -> RoutingRequest<'static> {
         // the engine hands it exactly this — an empty bag — on every real request, and the gate's
         // behaviour on that default path is what these tests assert.
         signals: Default::default(),
+        session: None,
     }
 }
 
@@ -208,6 +221,7 @@ fn req_without_prompt() -> RoutingRequest<'static> {
         prompt: None,
         identity: None,
         signals: Default::default(),
+        session: None,
     }
 }
 
@@ -252,22 +266,17 @@ async fn transform_compresses_granted_history() {
     let policy = load("{}");
     let history = format!("{}{}", log_dump(40), log_dump(40));
     let req = req_with_history(history.clone(), "why did the deployment fail");
-    match policy.transform(&req, BUDGET).await {
-        TransformOutcome::Rewrite(rw) => {
-            assert_eq!(rw.messages.len(), 2);
-            assert_eq!(rw.messages[1]["content"], "why did the deployment fail");
+    match policy.transform(&req).await {
+        Transformed::Rewrite(messages) => {
+            assert_eq!(messages.len(), 2);
+            assert_eq!(messages[1]["content"], "why did the deployment fail");
+            assert!(messages[0]["content"].as_str().unwrap().contains("ERROR"));
             assert!(
-                rw.messages[0]["content"]
-                    .as_str()
-                    .unwrap()
-                    .contains("ERROR")
-            );
-            assert!(
-                rw.messages[0].get("text").is_none(),
+                messages[0].get("text").is_none(),
                 "reply must be BODY form (content), not projection form (text)"
             );
             assert!(
-                rw.messages[0]["content"].as_str().unwrap().len() < history.len(),
+                messages[0]["content"].as_str().unwrap().len() < history.len(),
                 "the history must actually shrink"
             );
         }
@@ -283,10 +292,7 @@ async fn transform_abstains_when_nothing_to_compress() {
     }
     let policy = load("{}");
     let req = req_with_history("hi".to_string(), "how are you");
-    assert!(matches!(
-        policy.transform(&req, BUDGET).await,
-        TransformOutcome::Abstain
-    ));
+    assert!(matches!(policy.transform(&req).await, Transformed::Abstain));
 }
 
 /// `transform` with NO prompt projected (operator grant absent) → Abstain. The gate can never coerce
@@ -298,8 +304,8 @@ async fn transform_abstains_without_grant() {
     }
     let policy = load("{}");
     assert!(matches!(
-        policy.transform(&req_without_prompt(), BUDGET).await,
-        TransformOutcome::Abstain
+        policy.transform(&req_without_prompt()).await,
+        Transformed::Abstain
     ));
 }
 
@@ -314,16 +320,13 @@ async fn transform_abstains_when_min_savings_unreachable() {
     let mut settings = serde_json::Map::new();
     settings.insert("min_savings_pct".into(), serde_json::json!(100.0));
     policy
-        .configure("headroom", &settings, 1, BUDGET)
+        .configure(&settings, 1)
         .await
         .expect("a well-formed configure push acks");
 
     let history = format!("{}{}", log_dump(40), log_dump(40));
     let req = req_with_history(history, "why did the deployment fail");
-    assert!(matches!(
-        policy.transform(&req, BUDGET).await,
-        TransformOutcome::Abstain
-    ));
+    assert!(matches!(policy.transform(&req).await, Transformed::Abstain));
 }
 
 /// `decide` abstains over the seam (the gate ranks nothing).
@@ -333,16 +336,16 @@ async fn decide_abstains() {
         return;
     }
     let policy = load("{}");
-    let d = policy
-        .decide(
-            &req_with_history("hi".to_string(), "x"),
-            &[cand(0)],
-            &ctx(),
-            BUDGET,
-        )
-        .await
-        .expect("decide ok");
-    assert_eq!(d, RoutingDecision::Abstain);
+    let req = req_with_history("hi".to_string(), "x");
+    let frame = DecideFrame::first(DecideView::build(&req, &[cand(0)], &ctx()));
+    match policy.0.decide(frame, BUDGET).await {
+        Answered::Answer {
+            outcome: Outcome::Ready,
+            out,
+            ..
+        } => assert_eq!(out.verbs, VERB_ABSTAIN, "decide must abstain"),
+        other => panic!("expected an abstaining decide, got {other:?}"),
+    }
 }
 
 /// `describe` returns the settings schema + dashboard envelope; `status` reports observed settings +
@@ -354,22 +357,24 @@ async fn describe_and_status_over_the_seam() {
         return;
     }
     let policy = load(r#"{"target_ratio":0.4}"#);
-    let schema = policy.describe(BUDGET).await.expect("describe schema");
+    let describe = Gate::document(policy.0.describe(BUDGET).await);
+    let schema = &describe["schema"];
     assert_eq!(schema["type"], "object");
     assert!(schema["properties"]["target_ratio"].is_object());
 
     // Run a real compressing transform so status has something honest to report.
     let history = format!("{}{}", log_dump(40), log_dump(40));
     let req = req_with_history(history, "why did the deployment fail");
-    match policy.transform(&req, BUDGET).await {
-        TransformOutcome::Rewrite(_) => {}
+    match policy.transform(&req).await {
+        Transformed::Rewrite(_) => {}
         other => panic!("expected Rewrite to drive status, got {other:?}"),
     }
 
-    let status = policy.status(BUDGET).await.expect("status");
-    let settings = status.settings.expect("status settings");
+    let status = Gate::document(policy.0.status(BUDGET).await);
+    let status = &status["status"];
+    let settings = status["settings"].as_object().expect("status settings");
     assert_eq!(settings.get("target_ratio").unwrap(), 0.4);
-    let metrics = status.metrics.expect("metrics");
+    let metrics = status["metrics"].as_array().expect("metrics");
     let saved = metrics
         .iter()
         .find(|m| m["name"] == "headroom_tokens_saved_total")
@@ -390,14 +395,14 @@ async fn configure_acks_and_nacks_over_the_seam() {
     let mut good = serde_json::Map::new();
     good.insert("target_ratio".into(), serde_json::json!(0.3));
     policy
-        .configure("headroom", &good, 2, BUDGET)
+        .configure(&good, 2)
         .await
         .expect("a well-formed settings push acks");
 
     let mut bad = serde_json::Map::new();
     bad.insert("target_ratio".into(), serde_json::json!(2.0));
     assert!(
-        policy.configure("headroom", &bad, 3, BUDGET).await.is_err(),
+        policy.configure(&bad, 3).await.is_err(),
         "an out-of-range target_ratio must NACK (malformed push does not commit)"
     );
 }
