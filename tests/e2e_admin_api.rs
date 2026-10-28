@@ -367,6 +367,9 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
     // past the 32 MiB default — busbar then rejects at the content-length check and the client
     // sees a BrokenPipe mid-upload rather than a 413.
     //
+    // `store: { module: memory }`: 1.6.0 requires a `store:` block; `memory` is the compiled-in RAM
+    // store a 1.5.x config without one ran on (what `busbar --migrate-config` inserts).
+    //
     // `hook_defs` is the top-level `hooks:` definition block (empty on boot #1); `pool_attach` is
     // the reserved all-pools attach line INSIDE `pools:` (indented to the same level as a pool
     // name, since `hooks:` there is a reserved sibling key of the pool entries, not a pool).
@@ -377,6 +380,7 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
              identity-providers:\n  admin-tokens: {{ module: admin-tokens, token: {{ env: E2E_ADMIN_TOKEN }} }}\n\
              auth:\n  chain: [keys]\n  signing_key: {{ env: BUSBAR_SIGNING_KEY }}\n  admin_auth: [admin-tokens]\n\
              limits:\n  request_body_max_bytes: 536870912\n\
+             store: {{ module: memory }}\n\
              plugins:\n  enabled: true\n  dir: {}\n  trust:\n    allow_unsigned: true\n\
              providers:\n  mock:\n    api_key: {{ env: MOCK_KEY }}\n\
              models:\n  test-model:\n    provider: mock\n\
