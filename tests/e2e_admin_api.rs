@@ -289,7 +289,8 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
     std::fs::create_dir_all(&plugins_dir).unwrap();
 
     // Pack the REAL cdylib into a real tarball, exactly as CI's own release step does — unsigned
-    // locally, same allow_unsigned fallback CI uses without a BUSBAR_SIGN_KEY.
+    // locally, same allow_unsigned fallback CI uses without a BUSBAR_SIGN_KEY. No `--version`: the
+    // manifest's version is the one the plugin's Statement states (the pack tool refuses another).
     let tarball = work.join("headroom.tar.gz");
     let status = Command::new(&pack_bin)
         .args([
@@ -302,8 +303,6 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
             "headroom",
             "--kind",
             "hook",
-            "--version",
-            "0.0.0-e2e",
             "--publisher",
             "busbar",
             "--description",
