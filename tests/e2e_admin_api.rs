@@ -544,11 +544,15 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
         }))
         .send()
         .expect("POST /v1/chat/completions through the running busbar instance");
-    assert!(
-        completion_resp.status().is_success(),
-        "the compressed request must still complete successfully: {}",
-        completion_resp.status()
-    );
+    let completion_status = completion_resp.status();
+    if !completion_status.is_success() {
+        let body = completion_resp.text().unwrap_or_default();
+        panic!(
+            "the compressed request must still complete successfully: {completion_status}: \
+             {body}\nboot #2 log:\n{}",
+            boot_log("2")
+        );
+    }
 
     // Stop busbar before inspecting the captured upstream body, so there's no possibility of racing
     // a retry writing to `captured` mid-read.
