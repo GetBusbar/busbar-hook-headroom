@@ -131,9 +131,18 @@ fn build_real_binaries() -> (PathBuf, PathBuf) {
     let root = busbar_root();
     // Two invocations: in busbar 1.6.0 `busbar-plugin-pack` is a feature-gated bin of the
     // `busbar-plugin-loader` package (`--features pack`), and building it separately keeps the `pack`
-    // feature out of the `busbar` build.
+    // feature out of the `busbar` build. The `busbar` built is THE DEFAULT DISTRIBUTION
+    // (`dist/default`, its own workspace): core alone links no plane, and this test drives a chat
+    // completion through a pool, which the LLM plane (default-on there) owns.
     for args in [
-        &["build", "--release", "-p", "busbar", "--bin", "busbar"][..],
+        &[
+            "build",
+            "--release",
+            "--manifest-path",
+            "dist/default/Cargo.toml",
+            "--bin",
+            "busbar",
+        ][..],
         &[
             "build",
             "--release",
