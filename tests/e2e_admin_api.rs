@@ -370,6 +370,9 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
     // `store: { module: memory }`: 1.6.0 requires a `store:` block; `memory` is the compiled-in RAM
     // store a 1.5.x config without one ran on (what `busbar --migrate-config` inserts).
     //
+    // `advanced.allow_destinations: ["127.0.0.1"]`: 1.6.0's destination guard refuses a loopback
+    // provider upstream unless it is listed, and the mock upstream is on loopback.
+    //
     // `hook_defs` is the top-level `hooks:` definition block (empty on boot #1); `pool_attach` is
     // the reserved all-pools attach line INSIDE `pools:` (indented to the same level as a pool
     // name, since `hooks:` there is a reserved sibling key of the pool entries, not a pool).
@@ -381,6 +384,7 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
              auth:\n  chain: [keys]\n  signing_key: {{ env: BUSBAR_SIGNING_KEY }}\n  admin_auth: [admin-tokens]\n\
              limits:\n  request_body_max_bytes: 536870912\n\
              store: {{ module: memory }}\n\
+             advanced:\n  allow_destinations: [\"127.0.0.1\"]\n\
              plugins:\n  enabled: true\n  dir: {}\n  trust:\n    allow_unsigned: true\n\
              providers:\n  mock:\n    api_key: {{ env: MOCK_KEY }}\n\
              models:\n  test-model:\n    provider: mock\n\
