@@ -339,9 +339,9 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
     let overlay = work.join("overlay.json");
     std::fs::write(
         &providers_file,
-        format!(
-            "mock:\n  protocol: openai\n  base_url: \"http://127.0.0.1:{upstream_port}\"\n  api_key_env: MOCK_KEY\n"
-        ),
+        // No `api_key_env`: busbar refuses an unknown provider key; the provider's key is the
+        // config's `api_key: { env: MOCK_KEY }` below.
+        format!("mock:\n  protocol: openai\n  base_url: \"http://127.0.0.1:{upstream_port}\"\n"),
     )
     .unwrap();
 
