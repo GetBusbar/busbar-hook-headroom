@@ -35,4 +35,6 @@ allow-wildcard-paths = true
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = ["https://github.com/GetBusbar/busbar"]
+# headroom-core is already pinned by Cargo.toml tag v0.38.0 and Cargo.lock revision
+# 94206e265203acfd72a3b939e9a964e29175ad50; this admits only its existing upstream source.
+allow-git = ["https://github.com/GetBusbar/busbar", "https://github.com/headroomlabs-ai/headroom"]

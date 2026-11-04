@@ -333,14 +333,6 @@ jobs:
           pattern: busbar-*
           path: staged
 
-      # `pattern: busbar-*` can never match the `providers-yaml` artifact, so the "Arrange" step's
-      # `cp staged/providers-yaml/providers.yaml` needs this explicit download to find anything.
-      - name: Stage providers.yaml into build context
-        uses: actions/download-artifact@v4
-        with:
-          name: providers-yaml
-          path: staged/providers-yaml
-
       - name: Arrange per-arch layout
         run: |
           mkdir -p binaries/amd64 binaries/arm64 plugins/amd64/lib plugins/arm64/lib

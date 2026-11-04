@@ -12,9 +12,8 @@ Thanks for your interest in improving `busbar-hook-headroom`.
 
 ## Layout
 
-Every busbar plugin repo has the same shape. This one is a two-crate Cargo workspace:
-`hook-headroom/` holds the plugin's logic and `hook-headroom-plugin/` is the thin `cdylib` that
-packages it as a droppable `kind: hook` plugin. busbar itself is a git dependency
+This repo is one Cargo package: `src/` holds its logic and exports the `cdylib`
+as a droppable `kind: hook` plugin. busbar itself is a git dependency
 pinned to the commit in `.busbar-ref`. The CI, release and lint configuration are
 rendered from [busbar's plugin registry](https://github.com/GetBusbar/busbar/blob/main/plugins.yaml);
 change them there, not here.

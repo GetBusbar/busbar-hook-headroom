@@ -24,8 +24,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: write # commit the bump + push to dev
-  pull-requests: write # open/update the dev -> main PR
+  contents: read
 
 env:
   UPSTREAM: headroomlabs-ai/headroom
@@ -34,135 +33,134 @@ env:
 jobs:
   watch:
     runs-on: ubuntu-latest
+    outputs:
+      bump: ${{ steps.resolve.outputs.bump }}
+      latest: ${{ steps.resolve.outputs.latest }}
+      source: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.bump.outputs.version }}
     steps:
-      # busbar 1.6.0: headroom-hook's only busbar dependency is busbar-contract (busbar-plugin-loader
-      # dev-only), a `git` dependency at the rev in `.busbar-ref` field 1 — cargo resolves it with no
-      # busbar checkout at all. A busbar checkout AT THAT SAME REV is still made beside this repo,
-      # for one test: tests/e2e_admin_api.rs builds the REAL busbar + busbar-plugin-pack binaries
-      # from it (`BUSBAR_CHECKOUT`) and, under `CI`, fails rather than skips without it — the same
-      # layout ci.yml uses. (Until 1.6.0 this job checked busbar's `dev` out as a sibling PATH
-      # dependency for busbar-plugin-sdk; the manifest moved to `../busbar` while main's copy of this
-      # file still checked out `busbarAI`, so every scheduled bump failed to resolve plugin-sdk.)
-      - name: Checkout headroom-hook
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: dev
           path: headroom-hook
           fetch-depth: 0
-
-      - name: Resolve busbar ref from .busbar-ref
+          persist-credentials: false
+      - id: source
+        working-directory: headroom-hook
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Resolve busbar ref
         id: ref
         run: echo "sha=$(cut -d' ' -f1 headroom-hook/.busbar-ref)" >> "$GITHUB_OUTPUT"
-        shell: bash
-
-      - name: Checkout busbar at the pin (the real binaries the admin-API e2e drives)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           repository: GetBusbar/busbar
           ref: ${{ steps.ref.outputs.sha }}
           path: busbar
-
-      # The toolchain rust-toolchain.toml pins (1.98.0).
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-
-      - name: Resolve latest upstream release + current pin
+      - name: Resolve latest upstream release and current pin
         id: resolve
         working-directory: headroom-hook
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          latest="$(gh api "repos/${UPSTREAM}/releases/latest" --jq .tag_name)"
-          current="$(grep -m1 'headroom-core' Cargo.toml | grep -oE 'tag = "[^"]+"' | cut -d'"' -f2 || true)"
-          echo "latest=$latest"  >> "$GITHUB_OUTPUT"
-          echo "current=$current" >> "$GITHUB_OUTPUT"
-          # A bump is warranted iff latest is strictly greater than BOTH the floor and our current tag.
-          newest_vs_floor="$(printf '%s\n%s\n' "$latest" "$FLOOR" | sort -V | tail -1)"
-          bump=no
-          if [ "$latest" != "$FLOOR" ] && [ "$newest_vs_floor" = "$latest" ] && [ "$latest" != "$current" ]; then
-            bump=yes
-          fi
-          echo "bump=$bump" >> "$GITHUB_OUTPUT"
-          echo "::notice::upstream latest=$latest, current pin=${current:-<commit>}, floor=$FLOOR -> bump=$bump"
-
-      - name: Bump pin, build + test (lexical/no-ml), push to dev, open/update PR to main
+          LATEST="$(gh api "repos/${UPSTREAM}/releases/latest" --jq .tag_name)"
+          export LATEST
+          python3 - <<'PYTHON'
+          import os, re, tomllib
+          def version(tag):
+              match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", tag)
+              if not match:
+                  raise SystemExit("expected a stable vMAJOR.MINOR.PATCH release")
+              return tuple(map(int, match.groups()))
+          manifest = tomllib.load(open("Cargo.toml", "rb"))
+          current = manifest["dependencies"]["headroom-core"].get("tag")
+          latest = os.environ["LATEST"]
+          newer = version(latest) > version(os.environ["FLOOR"])
+          if current:
+              newer = newer and version(latest) > version(current)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"latest={latest}\nbump={'yes' if newer else 'no'}\n")
+          PYTHON
+      # No write token or persisted checkout credentials enter the upstream build job.
+      - name: Bump dependency and prove the lexical build
+        id: bump
         if: steps.resolve.outputs.bump == 'yes'
         working-directory: headroom-hook
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           LATEST: ${{ steps.resolve.outputs.latest }}
-          # The admin-API e2e's busbar checkout (at the pin) and its nested release build's knobs,
-          # exactly as ci.yml sets them.
           BUSBAR_CHECKOUT: ${{ github.workspace }}/busbar
           BUSBAR_TARGET_DIR: ${{ github.workspace }}/busbar-target
           CARGO_PROFILE_RELEASE_LTO: "off"
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: |
           set -euo pipefail
-          # Re-pin headroom-core to the new release TAG (drops any rev pin), keeping default-features = false.
-          # NOTE: use `~` as the s/// delimiter, NOT `{}` — the pattern/replacement contain literal braces
-          # and `[^}]`, which perl mis-balances against `{}` delimiters (dies with "Substitution replacement
-          # not terminated"). `~` never appears in a Cargo git-dep line, so it is a safe delimiter.
-          perl -0pi -e 's~headroom-core = \{ git = "https://github.com/headroomlabs-ai/headroom"[^}]*\}~headroom-core = { git = "https://github.com/headroomlabs-ai/headroom", tag = "'"$LATEST"'", default-features = false }~' Cargo.toml
-          grep headroom-core Cargo.toml
+          python3 - <<'PYTHON'
+          import os, pathlib, re
+          path = pathlib.Path("Cargo.toml")
+          text, count = re.subn(r'^headroom-core = \{[^}]*\}',
+              'headroom-core = { git = "https://github.com/headroomlabs-ai/headroom", tag = "' + os.environ["LATEST"] + '", default-features = false }',
+              path.read_text(), flags=re.M)
+          if count != 1:
+              raise SystemExit("expected exactly one headroom-core dependency")
+          path.write_text(text)
+          PYTHON
           cargo update -p headroom-core
-          # Prove the lexical build + tests are green against the new headroom BEFORE pushing anything.
-          cargo build --release --locked
-          cargo test --locked
-          # Our own next version (a dependency bump is a new hook release), from the ONE version rule
-          # every release path shares (.github/scripts/next-version.sh: the greater of the highest
-          # v* tag's patch-bump and Cargo.toml's version). Bumping Cargo.toml alone, ignoring tags,
-          # is how dev reached 2.0.22 while release-on-upstream computed v2.0.8. An already
-          # unreleased Cargo.toml version (above every tag) is kept, not skipped past.
           new="$(bash .github/scripts/next-version.sh)"; new="${new#v}"
           bash .github/scripts/stamp-version.sh "$new"
-          git config user.name  "headroom-release-watch"
+          echo "version=$new" >> "$GITHUB_OUTPUT"
+          cargo build --release --locked
+          cargo test --locked
+      - uses: actions/upload-artifact@v4
+        if: steps.resolve.outputs.bump == 'yes'
+        with:
+          name: headroom-dependency
+          path: |
+            headroom-hook/Cargo.toml
+            headroom-hook/Cargo.lock
+          if-no-files-found: error
+
+  publish:
+    needs: watch
+    if: needs.watch.outputs.bump == 'yes'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      # A fresh checkout owns the writer's scripts. Never execute the candidate or Cargo here.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.watch.outputs.source }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: headroom-dependency
+          path: candidate
+      - name: Publish the tested dependency update
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LATEST: ${{ needs.watch.outputs.latest }}
+          VERSION: ${{ needs.watch.outputs.version }}
+        run: |
+          set -euo pipefail
+          cp candidate/Cargo.toml Cargo.toml
+          cp candidate/Cargo.lock Cargo.lock
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          new="$VERSION"
+          git config user.name "headroom-release-watch"
           git config user.email "actions@users.noreply.github.com"
           git add Cargo.toml Cargo.lock
-          git commit -m "chore(deps): headroom-core -> ${LATEST}; headroom-hook v${new}
-
-          Auto-bump by headroom-release-watch: upstream headroom released ${LATEST}, which now carries
-          the ml-feature gate. Built + tested green (lexical/no-ml)."
+          git commit -m "chore(deps): headroom-core -> ${LATEST}; headroom-hook v${new}"
+          # Fast-forward only: a concurrent dev update refuses this stale candidate.
           git push origin HEAD:dev
-          echo "new_version=${new}" >> "$GITHUB_ENV"
-
-          # Fire this repo's REAL gate on the commit just pushed.
-          #
-          # A push made with GITHUB_TOKEN does not trigger workflows -- that is deliberate on
-          # GitHub's side (it stops recursive runs), but the effect here was that a dependency bump
-          # landed on dev with ZERO workflow runs against it and would have ridden to main untested
-          # by the repo's own gate. It happened: `chore(deps): headroom-core -> v0.34.0` sat on dev
-          # with no run at all.
-          #
-          # The `cargo build`/`cargo test` above are NOT a substitute. They run in this workflow's
-          # own environment and exercise the crate alone; `ci.yml` runs the plugin over the real
-          # dlopen ABI seam against the pinned busbar contract, on the full target matrix. Only the
-          # second one is the gate this repo actually relies on.
-          #
-          # WHEN THIS ACTUALLY TAKES EFFECT: this workflow is `on: schedule`, and GitHub loads a
-          # scheduled workflow from the DEFAULT BRANCH. So the version of this file that runs is
-          # whatever is on `main`, NOT what is on `dev` — a dispatch added here does nothing until
-          # `main` moves. Observed directly: bump `071a8a7` still landed on dev with no CI run,
-          # because the run executing that push was `main`'s copy of this file.
-          #
-          # Until then, a bump reaching dev untested is caught by the release process, which
-          # verifies every repo has a CI run on the exact SHA that is on the branch rather than
-          # trusting "the last run was green".
-          #
-          # Non-fatal: the bump is already pushed, so failing here would report the bump as failed
-          # when it succeeded. A missed dispatch is visible as a commit with no run.
-          gh workflow run ci.yml --repo "${GITHUB_REPOSITORY}" --ref dev \
-            || echo "::warning::could not dispatch ci.yml for the pushed bump -- run it by hand"
-
-          # Open a dev -> main PR if one isn't already open (a second bump before the first is
-          # reviewed just adds a commit to the same PR, since it's pushing to the same dev branch).
-          existing="$(gh pr list --repo "${GITHUB_REPOSITORY}" --base main --head dev --state open --json number --jq '.[0].number // empty')"
+          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref dev
+          existing="$(gh pr list --repo "$GITHUB_REPOSITORY" --base main --head dev --state open --json number --jq '.[0].number // empty')"
           if [ -z "$existing" ]; then
-            gh pr create --repo "${GITHUB_REPOSITORY}" --base main --head dev \
+            gh pr create --repo "$GITHUB_REPOSITORY" --base main --head dev \
               --reviewer MattJackson \
               --title "Release: headroom-hook v${new} (headroom-core ${LATEST})" \
-              --body "Auto-opened by headroom-release-watch. Bumps headroom-core to ${LATEST} and headroom-hook to v${new}. Built + tested green (lexical/no-ml) before this PR was opened. Merging this triggers headroom-release-publish.yml, which tags the merge commit and republishes docker.yml + release.yml."
-          else
-            echo "::notice::PR #$existing already open dev -> main, pushed additional commit onto it"
+              --body "Bumps headroom-core to ${LATEST} and headroom-hook to v${new}. The dependency passed the lexical build and tests in a read-only job."
           fi
-          echo "::notice::pushed headroom-hook v${new} (headroom-core ${LATEST}) to dev; awaiting PR review/merge to publish"
