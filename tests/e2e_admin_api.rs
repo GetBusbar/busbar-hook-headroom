@@ -13,7 +13,7 @@
 //!   1. Pack the built `headroom-hook` cdylib into a real tarball with the real `busbar-plugin-pack`
 //!      tool (dev-only, unsigned locally — same fallback CI's own release jobs use without a
 //!      `BUSBAR_SIGN_KEY`).
-//!   2. Boot a REAL `busbar` binary (subprocess — `crates/busbar` in the sibling `busbarAI` checkout
+//!   2. Boot a REAL `busbar` binary (subprocess — `crates/busbar` in the busbar checkout at `.busbar-ref`
 //!      is bin-only, no library crate, so an in-process test harness isn't available from outside
 //!      that crate) with the admin listener up and no hook plugin loaded yet.
 //!   3. POST the base64 tarball to `POST /api/v1/admin/plugins` — the real runtime-install path
@@ -39,9 +39,9 @@
 //!      ran across the FULL real path (HTTP admin install -> real dlopen -> real hook invocation ->
 //!      real HTTP request mutation -> real upstream receipt), not merely that busbar returned 200.
 //!
-//! Mirrors the pattern the sibling `store-redis` plugin's own
-//! `admin_api_installs_the_redis_plugin_and_writes_land_in_real_redis` test established for a
-//! `store` plugin (build the real binaries from the sibling `busbarAI` checkout, pack + install
+//! Mirrors the pattern the sibling `store-valkey` plugin's own
+//! `admin_api_installs_the_valkey_plugin_and_writes_land_in_real_valkey` test established for a
+//! `store` plugin (build the real binaries from the sibling `busbar` checkout, pack + install
 //! over the real admin API, restart to apply, independently verify the real effect) — adapted here
 //! for a `hook` plugin, where the "real effect" is an observed request mutation instead of a
 //! persisted row.
@@ -52,19 +52,22 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// Fixed ed25519 signing secret (64 hex = 32 bytes) for this e2e test. 1.5.1 requires an
+/// explicit signing key to mint virtual keys; busbar no longer auto-generates one.
+const TEST_SIGNING_KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
 /// Locate the built `headroom-hook` cdylib in the target dir (mirrors `tests/e2e.rs`'s own
 /// `plugin_path()` — kept separate since the two files must each stand alone).
 ///
 /// Checks BOTH the uplifted `<profile_dir>/<name>` copy and the raw `<profile_dir>/deps/<name>`
 /// compiler output — a bare `cargo test` (what this repo's own CI runs) never uplifts, only
 /// `target/deps`, so checking only the former silently finds nothing even though the cdylib was
-/// really built. Same fix already applied to store-postgres-plugin's, auth-oidc-plugin's,
-/// webrequest-hook's, and busbarAI core's hook-test-plugin's equivalent `plugin_path()` helpers.
+/// really built.
 fn plugin_path() -> Option<PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
-        let name = busbar_plugin_loader::plugin_library_filename("headroom_hook");
+        let name = busbar_plugin_loader::plugin_library_filename("busbar_hook_headroom");
         let uplifted = profile_dir.join(&name);
         let raw = profile_dir.join("deps").join(&name);
         [uplifted, raw]
@@ -88,17 +91,26 @@ fn plugin_path() -> Option<PathBuf> {
     candidate
 }
 
-/// The sibling `busbarAI` checkout's root — the same path convention this crate's own `Cargo.toml`
-/// path dependencies already require to exist.
-fn busbarai_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../busbarAI")
-        .canonicalize()
-        .expect("sibling busbarAI checkout must exist (see Cargo.toml path deps)")
+/// The busbar checkout the real binaries are built from: `$BUSBAR_CHECKOUT` when set, else a sibling
+/// `../busbar`. It must be the busbar rev this repo pins (`.busbar-ref` field 1) — CI checks it out
+/// at exactly that rev — so the binary under test is the one the plugin's `busbar-contract` names.
+fn busbar_root() -> PathBuf {
+    std::env::var_os("BUSBAR_CHECKOUT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../busbar"))
+}
+
+/// Where the nested busbar build puts its binaries: `$BUSBAR_TARGET_DIR` when set, else the
+/// checkout's own `target/`. Never the outer `cargo test`'s `CARGO_TARGET_DIR`, which that cargo
+/// still holds locked.
+fn busbar_target() -> PathBuf {
+    std::env::var_os("BUSBAR_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| busbar_root().join("target"))
 }
 
 /// Under `CI` a missing prerequisite is a HARD FAILURE, never a silent skip (mirrors the sibling
-/// `store-redis` plugin's own `redis_url()` gating discipline for its admin-API e2e test) — locally
+/// `store-valkey` plugin's own `valkey_url()` gating discipline for its admin-API e2e test) — locally
 /// it's a clean print-and-skip.
 fn require_or_skip(ok: bool, what: &str) -> bool {
     if ok {
@@ -109,33 +121,44 @@ fn require_or_skip(ok: bool, what: &str) -> bool {
             "{what} is unavailable under CI: refusing to silently skip the real admin-API e2e test"
         );
     }
-    eprintln!("skip: {what} unavailable (run under CI or build the sibling busbarAI checkout)");
+    eprintln!("skip: {what} unavailable (set BUSBAR_CHECKOUT to a busbar checkout at .busbar-ref)");
     false
 }
 
 /// Build (once; cached by cargo across runs) the real `busbar` and `busbar-plugin-pack` binaries
-/// from the sibling `busbarAI` checkout — never a fixture, never a stub.
+/// from the busbar checkout ([`busbar_root`]) — never a fixture, never a stub.
 fn build_real_binaries() -> (PathBuf, PathBuf) {
-    let root = busbarai_root();
-    let status = Command::new("cargo")
-        .args([
+    let root = busbar_root();
+    // Two invocations: in busbar 1.6.0 `busbar-plugin-pack` is a feature-gated bin of the
+    // `busbar-plugin-loader` package (`--features pack`), and building it separately keeps the `pack`
+    // feature out of the `busbar` build.
+    for args in [
+        &["build", "--release", "-p", "busbar", "--bin", "busbar"][..],
+        &[
             "build",
             "--release",
             "-p",
-            "busbar",
-            "-p",
+            "busbar-plugin-loader",
+            "--features",
+            "pack",
+            "--bin",
             "busbar-plugin-pack",
-        ])
-        .current_dir(&root)
-        .status()
-        .expect("run cargo build for busbar + busbar-plugin-pack");
-    assert!(
-        status.success(),
-        "building the real busbar + busbar-plugin-pack binaries must succeed"
-    );
+        ][..],
+    ] {
+        let status = Command::new("cargo")
+            .args(args)
+            .current_dir(&root)
+            .env("CARGO_TARGET_DIR", busbar_target())
+            .status()
+            .expect("run cargo build for busbar / busbar-plugin-pack");
+        assert!(
+            status.success(),
+            "building the real busbar + busbar-plugin-pack binaries must succeed ({args:?})"
+        );
+    }
     (
-        root.join("target/release/busbar"),
-        root.join("target/release/busbar-plugin-pack"),
+        busbar_target().join("release/busbar"),
+        busbar_target().join("release/busbar-plugin-pack"),
     )
 }
 
@@ -151,7 +174,7 @@ impl Drop for ChildGuard {
 }
 
 /// A free-at-the-moment localhost port (bind-then-drop; a TOCTOU race is possible in principle but
-/// is the accepted pattern for test port allocation, same as the sibling `store-redis` e2e test).
+/// is the accepted pattern for test port allocation, same as the sibling `store-valkey` e2e test).
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .expect("bind an ephemeral port")
@@ -160,13 +183,8 @@ fn free_port() -> u16 {
         .port()
 }
 
-/// 90s, not 15s: boot #2 dlopens the headroom plugin, and this plugin's own init builds a real
-/// tokenizer. Under the DEBUG profile a bare `cargo test` produces (what CI runs), that init alone
-/// was measured here at ~12.5s between "plugins: enabled loadable=1" and "hook plugin declared
-/// content intent" in the boot log, so a 15s budget for the WHOLE boot leaves almost nothing for
-/// binding the listeners and reports a correctly-wired gate as a dead instance.
 fn poll_admin_up(admin: &str, token: &str, client: &reqwest::blocking::Client) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(90);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while Instant::now() < deadline {
         if let Ok(resp) = client
             .get(format!("{admin}/plugins?type=hooks"))
@@ -250,7 +268,10 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
         }
         unreachable!();
     };
-    if !require_or_skip(busbarai_root().is_dir(), "the sibling busbarAI checkout") {
+    if !require_or_skip(
+        busbar_root().is_dir(),
+        "the busbar checkout ($BUSBAR_CHECKOUT or ../busbar)",
+    ) {
         return;
     }
 
@@ -319,42 +340,40 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
     // BOOT #1 config: no gate yet — the whole point is that the gate only becomes real once
     // installed over the admin API AND wired in on the next boot.
     //
-    // 1.5.3 GRAMMAR, and every clause here is a FAIL-CLOSED boot refusal if written the 1.x way
-    // (`config::migrate::detect_legacy_markers` + `legacy_config_error` in core's `main.rs`), so a
-    // stale shape kills BOTH boots below at startup, long before the admin listener ever binds:
-    //
-    //   * A hook instance is DEFINED ONCE in the top-level `hooks:` named map and ATTACHED BY BARE
-    //     NAME. The old top-level `global_hooks:` list of inline `{ module: ..., kind: gate,
-    //     prompt: rw, ... }` refs was REMOVED in 1.5.3; its successor for an every-request gate is
-    //     the reserved `pools.hooks:` all-pools attach list (a `hooks:` key sitting alongside the
-    //     pool names under `pools:`, not inside one of them).
-    //   * The operator token provider is DEFINED ONCE under the top-level `identity-providers:`
-    //     named map and REFERENCED BY BARE NAME from `auth.admin_auth:`. The inline form
-    //     (`admin_auth: [ { admin-tokens: { token: ... } } ]`) is retired.
-    //   * `auth.chain: [keys]` names the built-in signed-token verifier, and since 1.5.1 busbar no
-    //     longer auto-generates a signing key, so `auth.signing_key` must be set or boot refuses
-    //     and the key mint further down would 409 with `no_signing_key`.
-    //
-    // Shapes taken verbatim from `busbar --migrate-config`'s own output for the previous form and
-    // re-confirmed with `busbar --validate` against the released 1.5.3 binary.
+    // 1.5.3 GRAMMAR (the break-once release; both of the shapes this test used before are now
+    // fail-closed BOOT REFUSALS, not warnings — `config::migrate::detect_legacy_markers` in core):
+    //   * An IdP is DEFINED ONCE under the top-level `identity-providers:` map and REFERENCED BY
+    //     BARE NAME from `auth.admin_auth:` / `auth.chain:`. The old INLINE chain entry
+    //     (`admin_auth:\n  - admin-tokens: { token: … }`) is retired.
+    //   * A hook is DEFINED ONCE under the top-level `hooks:` NAMED map (the key is the hook
+    //     INSTANCE id, `module:` names the `kind: hook` plugin behind it) and ATTACHED by bare name
+    //     — either per-pool (`pools.<p>.hooks:`) or, as here, via the reserved ALL-POOLS
+    //     `pools.hooks:` list, which is exactly what the removed top-level `global_hooks:` lowers
+    //     to. Same shape this repo's own `docker/bundle/config.yaml` and the docker-bundle smoke
+    //     test's config carry.
+    // The gate is attached globally rather than pool-scoped: that is a real deployment shape, and
+    // the one this test exercises.
     let config_v1 = work.join("config-1.yaml");
     // 512 MiB request-body cap (`limits:` below): the install POST carries the packed cdylib as
     // base64, and a DEBUG-profile build of this plugin (what `cargo test` produces on CI) blows
     // past the 32 MiB default — busbar then rejects at the content-length check and the client
     // sees a BrokenPipe mid-upload rather than a 413.
-    let base_config = |hooks: &str, pool_hooks: &str| {
+    //
+    // `hook_defs` is the top-level `hooks:` definition block (empty on boot #1); `pool_attach` is
+    // the reserved all-pools attach line INSIDE `pools:` (indented to the same level as a pool
+    // name, since `hooks:` there is a reserved sibling key of the pool entries, not a pool).
+    let base_config = |hook_defs: &str, pool_attach: &str| {
         format!(
             "listen: \"127.0.0.1:{port}\"\n\
              admin_listen: \"127.0.0.1:{admin_port}\"\n\
              identity-providers:\n  admin-tokens: {{ module: admin-tokens, token: {{ env: E2E_ADMIN_TOKEN }} }}\n\
-             auth:\n  chain: [keys]\n  signing_key: {{ env: E2E_SIGNING_KEY }}\n  admin_auth: [admin-tokens]\n\
+             auth:\n  chain: [keys]\n  signing_key: {{ env: BUSBAR_SIGNING_KEY }}\n  admin_auth: [admin-tokens]\n\
              limits:\n  request_body_max_bytes: 536870912\n\
              plugins:\n  enabled: true\n  dir: {}\n  trust:\n    allow_unsigned: true\n\
              providers:\n  mock:\n    api_key: {{ env: MOCK_KEY }}\n\
              models:\n  test-model:\n    provider: mock\n\
-             {hooks}\
-             pools:\n  p:\n    members:\n      - {{ model: test-model, weight: 1 }}\n\
-             {pool_hooks}",
+             {hook_defs}\
+             pools:\n{pool_attach}  p:\n    members:\n      - {{ model: test-model, weight: 1 }}\n",
             plugins_dir.display(),
         )
     };
@@ -371,11 +390,7 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
         cmd.env("BUSBAR_CONFIG", config)
             .env("BUSBAR_PROVIDERS", &providers_file)
             .env("E2E_ADMIN_TOKEN", &admin_token)
-            // 64 hex chars = 32 raw ed25519 bytes, the shape `auth.signing_key` wants. Test-only.
-            .env(
-                "E2E_SIGNING_KEY",
-                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-            )
+            .env("BUSBAR_SIGNING_KEY", TEST_SIGNING_KEY)
             .env("MOCK_KEY", "unused-mock-provider-key")
             .env("BUSBAR_STATE_FILE", "")
             .env("BUSBAR_CONFIG_OVERLAY", &overlay)
@@ -451,8 +466,8 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
         // unmodified) and this test would then observe byte-identical bodies upstream even with a
         // correctly installed, correctly wired, correctly firing gate. Raise it generously.
         base_config(
-            "hooks:\n  headroom:\n    module: headroom\n    kind: gate\n    prompt: rw\n    timeout_ms: 500\n",
-            "  hooks:\n    - headroom\n",
+            "hooks:\n  headroom: { module: headroom, kind: gate, prompt: rw, timeout_ms: 500 }\n",
+            "  hooks: [headroom]\n",
         ),
     )
     .unwrap();

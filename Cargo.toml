@@ -1,6 +1,6 @@
 [package]
-name = "headroom-hook"
-version = "2.0.0"
+name = "busbar-hook-headroom"
+version = "2.0.22"
 edition = "2024"
 publish = false
 description = "busbar first-party kind:hook plugin (dlopen cdylib): compresses LLM chat history with the real headroom-core BM25 TextCrusher engine as a prompt:rw rewrite gate."
@@ -15,25 +15,27 @@ crate-type = ["cdylib", "rlib"]
 # lexical build is ~7x smaller (29MB -> ~3MB) and avoids the ONNX-in-distroless slow path. The
 # `ml`-feature gate landed UPSTREAM in headroomlabs-ai/headroom#2165 (merged 2026-07-15), so we pin
 # to the upstream merge commit — the fork is retired. The gate is not in a release yet (latest is
-# v0.31.0, pre-merge); the docker CI (see .github/workflows/headroom-release-watch.yml) re-pins to
+# v0.33.0, pre-merge); the docker CI (see .github/workflows/headroom-release-watch.yml) re-pins to
 # the first upstream RELEASE tag that contains the gate and rebuilds. The pin protects builds.
-headroom-core = { git = "https://github.com/headroomlabs-ai/headroom", tag = "v0.33.0", default-features = false }
+headroom-core = { git = "https://github.com/headroomlabs-ai/headroom", tag = "v0.38.0", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# INTERIM: busbarAI isn't public yet, so this is a local path dependency into a sibling checkout of
-# the monorepo. Once busbarAI ships publicly this should become a git (pinned rev/tag) or crates.io
-# dependency instead — same relative-path convention webrequest-hook's busbar-plugin-sdk dependency
-# already uses.
-busbar-plugin-sdk = { path = "../busbarAI/crates/plugin-sdk" }
+# The ONE busbar crate this plugin names (#40: contract only; DECISIONS #84 merged the plugin SDK into
+# it as `busbar_contract::abi::sdk`, so the hook trait, the export macro and the hook shapes all come
+# from here). A git dependency on GetBusbar/busbar pinned to the rev in `.busbar-ref` field 1; a busbar
+# build that links this crate `[patch]`es the busbar git source to its own tree, so ONE copy links.
+busbar-contract = { git = "https://github.com/GetBusbar/busbar", rev = "7a5b429041752e00375e120ab1547a8928c3dee4" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
-busbar-plugin-loader = { path = "../busbarAI/crates/plugin-loader" }
-busbar-api = { path = "../busbarAI/crates/api" }
+# The REAL loader (dev-only, never in the shipped artifact): the e2e and the linked/dropped-in
+# conformance tests open the built cdylib through it. Same pinned rev as busbar-contract above, so one
+# busbar source resolves.
+busbar-plugin-loader = { git = "https://github.com/GetBusbar/busbar", rev = "7a5b429041752e00375e120ab1547a8928c3dee4" }
 # Dev-only: the real-admin-API e2e test builds+drives an actual `busbar` process over HTTP (install
 # a signed plugin tarball via POST /api/v1/admin/plugins, mint a key, drive a real chat completion)
 # — a blocking client keeps that test synchronous, no tokio runtime needed. Same major version
-# busbarAI's own `busbar` crate pins, rustls-tls only, mirroring its trimmed feature set.
+# busbar's own `busbar` crate pins, rustls-tls only, mirroring its trimmed feature set.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 # Dev-only: base64-encodes the packed tarball into POST /api/v1/admin/plugins's JSON body.
 base64 = "0.22"

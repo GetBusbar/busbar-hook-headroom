@@ -75,6 +75,132 @@ fn compresses_history_keeps_ask() {
     assert!(msgs[0].get("text").is_none());
 }
 
+/// EVERY message survives the rewrite, with its own role, in its own position.
+///
+/// This is the load-bearing property of a hook whose reply REPLACES the request's entire messages
+/// array, and nothing tested it. The only multi-message test asserts on `msgs[0]` and `msgs[2]` and
+/// never looks at `msgs[1]`, so blanking every message that is neither the first nor the ask kept
+/// the whole suite green. Its two history fixtures were also byte-identical, so swapping them was
+/// invisible, and no test in the repo ever read an output `role`, so relabelling every assistant
+/// turn as `user` reached the model unnoticed.
+///
+#[test]
+fn every_history_message_keeps_its_content_role_and_position() {
+    // Short turns bracket a long one. The long turn supplies the savings that make the rewrite
+    // commit; the short ones sit under the crusher's passthrough floor, so they come back verbatim
+    // and their position is checkable. Content preservation per se is NOT the property here: a
+    // lossy compressor is supposed to drop low-relevance lines from a long message. What must hold
+    // is that a message stays a message, in its own slot, under its own role.
+    let payload = transform_payload(vec![
+        ("user", "ALPHA".to_string()),
+        ("assistant", log_dump(40)),
+        ("user", "BRAVO".to_string()),
+        ("user", "why did the deployment fail".to_string()),
+    ]);
+    let knobs = locked(Knobs {
+        target_ratio: 0.4,
+        min_savings_pct: 10.0,
+        ..Knobs::default()
+    });
+    let reply = transform(&payload, &knobs);
+    let msgs = reply["rewrite"]["messages"]
+        .as_array()
+        .expect("rewrite arm");
+
+    assert_eq!(msgs.len(), 4, "no message may be added or dropped");
+
+    // ROLES, in order. Never asserted anywhere before this.
+    let roles: Vec<&str> = msgs.iter().map(|m| m["role"].as_str().unwrap()).collect();
+    assert_eq!(
+        roles,
+        vec!["user", "assistant", "user", "user"],
+        "each message must keep its own role: relabelling an assistant turn as user changes what \
+         the model thinks it said"
+    );
+
+    // CONTENT, non-empty and still in its own slot. A compressor that blanked the middle, or that
+    // reordered the history, fails here rather than sliding past an assertion that only looks at
+    // the ends.
+    for (i, m) in msgs.iter().enumerate() {
+        let content = m["content"].as_str().unwrap();
+        assert!(
+            !content.trim().is_empty(),
+            "message {i} came back empty: compression must shorten a message, never delete it"
+        );
+    }
+    assert_eq!(
+        msgs[0]["content"], "ALPHA",
+        "message 0 must still be message 0"
+    );
+    assert_eq!(
+        msgs[2]["content"], "BRAVO",
+        "message 2 must still be message 2: a swap of two history turns was previously invisible, \
+         because the only multi-message fixture used two byte-identical strings"
+    );
+    assert_eq!(msgs[3]["content"], "why did the deployment fail");
+    // ...and the long turn between them really was compressed, so this is not an abstain in
+    // disguise.
+    assert!(
+        msgs[1]["content"].as_str().unwrap().len() < log_dump(40).len(),
+        "the long history turn must actually shrink"
+    );
+}
+
+/// A `system` turn is passed through verbatim. On the dialects that carry the system prompt inside
+/// the turns array it arrives as an ordinary message, and compressing it shreds the operator's own
+/// instructions against whatever the user asked. Without this the same deployment behaves
+/// differently depending on which dialect the client speaks.
+#[test]
+fn a_system_turn_is_never_compressed() {
+    let system = format!("SYSTEM_RULES {}", log_dump(40));
+    let payload = transform_payload(vec![
+        ("system", system.clone()),
+        ("user", log_dump(40)),
+        ("user", "why did the deployment fail".to_string()),
+    ]);
+    let knobs = locked(Knobs {
+        target_ratio: 0.4,
+        min_savings_pct: 1.0,
+        ..Knobs::default()
+    });
+    let reply = transform(&payload, &knobs);
+    let msgs = reply["rewrite"]["messages"]
+        .as_array()
+        .expect("rewrite arm");
+    assert_eq!(msgs[0]["role"], "system");
+    assert_eq!(
+        msgs[0]["content"].as_str().unwrap(),
+        system,
+        "the system turn must survive byte-for-byte"
+    );
+    // ...while the ordinary history turn beside it still compresses, so this is not just an
+    // abstain in disguise.
+    assert!(msgs[1]["content"].as_str().unwrap().len() < log_dump(40).len());
+}
+
+/// A rewrite must never be committed unless it actually made the prompt shorter. `min_savings_pct`
+/// is settable to 0, and the percentage is clamped at zero, so at a zero bar both "compressed
+/// nothing" and "made it longer" used to satisfy the gate and commit a rewrite that achieved
+/// nothing while still replacing the request's entire messages array.
+#[test]
+fn a_zero_savings_bar_still_requires_an_actual_reduction() {
+    // Short, low-redundancy history: the crusher has nothing to remove, so chars_after >= before.
+    let payload = transform_payload(vec![
+        ("user", "hi".to_string()),
+        ("user", "what next".to_string()),
+    ]);
+    let knobs = locked(Knobs {
+        target_ratio: 0.4,
+        min_savings_pct: 0.0,
+        ..Knobs::default()
+    });
+    let reply = transform(&payload, &knobs);
+    assert!(
+        reply.get("rewrite").is_none(),
+        "a zero-savings result must abstain even at a zero bar, got {reply}"
+    );
+}
+
 /// The LAST message (the ask) is preserved verbatim even when it is itself long/compressible —
 /// proving `run_transform`'s `last` index actually singles out the final message rather than, say,
 /// running every message (including the ask) through the compressor.
@@ -394,4 +520,166 @@ fn latency_multi_kb_prompt() {
         per < std::time::Duration::from_millis(250),
         "compression should be well under a serving-acceptable deadline, got {per:?}"
     );
+}
+
+/// The three places a setting's bounds/default are written (`apply_settings`, `settings_schema`,
+/// `Knobs::default`) must agree: for every schema property the default equals the `Knobs` default,
+/// `apply_settings` accepts the minimum and maximum, and rejects just outside them.
+#[test]
+fn settings_schema_agrees_with_knobs_and_apply_settings() {
+    let schema = settings_schema();
+    let props = schema["properties"].as_object().expect("properties");
+    let d = Knobs::default();
+    let field = |k: &Knobs, name: &str| match name {
+        "target_ratio" => k.target_ratio,
+        "min_savings_pct" => k.min_savings_pct,
+        "price_udollars_per_ktok" => k.price_udollars_per_ktok,
+        other => panic!("schema property {other:?} has no Knobs field in this test"),
+    };
+    assert_eq!(
+        props.len(),
+        3,
+        "a new setting needs a row in this cross-check"
+    );
+    let one = |name: &str, v: f64| {
+        let mut m = serde_json::Map::new();
+        m.insert(name.to_string(), json!(v));
+        apply_settings(&m)
+    };
+    for (name, p) in props {
+        let (min, max, def) = (
+            p["minimum"].as_f64().unwrap(),
+            p["maximum"].as_f64().unwrap(),
+            p["default"].as_f64().unwrap(),
+        );
+        assert_eq!(
+            def,
+            field(&d, name),
+            "{name}: schema default != Knobs::default"
+        );
+        assert_eq!(
+            field(&apply_settings(&serde_json::Map::new()).unwrap(), name),
+            def
+        );
+        assert_eq!(
+            field(&one(name, min).unwrap(), name),
+            min,
+            "{name}: minimum accepted"
+        );
+        assert_eq!(
+            field(&one(name, max).unwrap(), name),
+            max,
+            "{name}: maximum accepted"
+        );
+        let eps = (max - min) * 1e-6;
+        assert!(
+            one(name, min - eps).is_err(),
+            "{name}: just below minimum must be rejected"
+        );
+        assert!(
+            one(name, max + eps).is_err(),
+            "{name}: just above maximum must be rejected"
+        );
+    }
+}
+
+/// `transform_payload` with an explicit pool.
+fn pool_payload(pool: &str, messages: Vec<(&str, String)>) -> Value {
+    let mut p = transform_payload(messages);
+    p["request"]["pool"] = json!(pool);
+    p
+}
+
+/// Metrics ACCUMULATE across requests and per pool: two committing + one abstaining transform on
+/// pool `p` and one abstaining on pool `q`. Requests, overhead samples and input tokens count every
+/// request; tokens saved count ONLY the committed requests' savings.
+#[test]
+fn metrics_accumulate_per_pool_and_only_committed_saves() {
+    let knobs = locked(Knobs {
+        target_ratio: 0.4,
+        min_savings_pct: 10.0,
+        ..Knobs::default()
+    });
+    let metrics = Mutex::new(Metrics::default());
+    let big = || {
+        pool_payload(
+            "p",
+            vec![
+                ("user", log_dump(40)),
+                ("user", "why did the deployment fail".to_string()),
+            ],
+        )
+    };
+    let small = |pool: &str| {
+        pool_payload(
+            pool,
+            vec![("user", "hi".to_string()), ("user", "there".to_string())],
+        )
+    };
+    let mut delta_chars = 0u64;
+    for _ in 0..2 {
+        let reply = run_transform(&big(), &knobs, &metrics);
+        let out: usize = reply["rewrite"]["messages"]
+            .as_array()
+            .expect("committed")
+            .iter()
+            .map(|m| m["content"].as_str().unwrap().len())
+            .sum();
+        let before = log_dump(40).len() + "why did the deployment fail".len();
+        delta_chars += (before - out) as u64;
+    }
+    assert_eq!(run_transform(&small("p"), &knobs, &metrics), json!({}));
+    assert_eq!(run_transform(&small("q"), &knobs, &metrics), json!({}));
+
+    let status = build_status(&knobs, &metrics);
+    let m = status["status"]["metrics"].as_array().unwrap();
+    let val = |name: &str, pool: &str| {
+        m.iter()
+            .find(|e| e["name"] == name && e["labels"]["pool"] == pool)
+            .unwrap_or_else(|| panic!("{name}{{pool={pool}}}"))["value"]
+            .clone()
+    };
+    assert_eq!(val("headroom_requests_total", "p"), 3);
+    assert_eq!(val("headroom_requests_total", "q"), 1);
+    assert_eq!(val("headroom_overhead_ms_count", "p"), 3);
+    assert_eq!(val("headroom_overhead_ms_count", "q"), 1);
+    assert_eq!(
+        val("headroom_tokens_saved_total", "p"),
+        est_tokens(delta_chars),
+        "only the committed requests' savings count"
+    );
+    assert_eq!(val("headroom_tokens_saved_total", "q"), 0);
+}
+
+/// Every dashboard widget's `metric` is a `name` that `build_status` actually emits.
+#[test]
+fn dashboard_widgets_reference_emitted_metric_names() {
+    let knobs = locked(Knobs::default());
+    let metrics = Mutex::new(Metrics::default());
+    let payload = transform_payload(vec![
+        ("user", log_dump(40)),
+        ("user", "why did the deployment fail".to_string()),
+    ]);
+    assert!(
+        run_transform(&payload, &knobs, &metrics)
+            .get("rewrite")
+            .is_some()
+    );
+    let status = build_status(&knobs, &metrics);
+    let emitted: Vec<&str> = status["status"]["metrics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    let describe = describe_reply();
+    let widgets = describe["dashboard"]["widgets"].as_array().unwrap();
+    assert!(!widgets.is_empty());
+    for w in widgets {
+        let metric = w["metric"].as_str().unwrap();
+        assert!(
+            emitted.contains(&metric),
+            "widget metric {metric:?} is never emitted by build_status: {emitted:?}"
+        );
+    }
 }

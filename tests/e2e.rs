@@ -2,19 +2,17 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! End-to-end coverage of the `headroom-hook` compression gate loaded over the REAL
-//! `busbar-plugin-loader` `open_hook` seam (`load_hook_from_bytes`) — the exact seam busbarAI's
+//! `busbar-plugin-loader` `open_hook` seam (`load_hook_from_bytes`) — the exact seam busbar's
 //! engine sees: an `Arc<dyn RoutingPolicy>` indistinguishable from a compiled-in policy, whose
 //! `transform` compresses the granted prompt with the REAL `headroom-core` BM25 `TextCrusher`
 //! engine, and whose reply is parsed through the engine's own fail-closed `hooks::wire`
 //! normalizers.
 //!
-//! Ported from `busbarAI/crates/headroom-hook-plugin/tests/e2e.rs` (the placeholder plugin's e2e
-//! harness/style — its compression algorithm was fake, only the harness shape is mirrored here) and
-//! from the old socket hook's `src/tests/compress.rs` fixtures (`log_dump`), since a toy 2-word
-//! string never triggers BM25/TextCrusher's real compression path — `TextCrusher` itself passes
-//! short texts (<6 segments) through unchanged.
+//! The corpus fixtures (`log_dump`) are shared with `src/tests/compress.rs`: a toy 2-word string
+//! never triggers BM25/TextCrusher's real compression path, since `TextCrusher` passes short texts
+//! (<6 segments) through unchanged.
 
-use busbar_api::{
+use busbar_contract::hooks::{
     Candidate, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest, TransformOutcome,
 };
 use busbar_plugin_loader::hook::{HookProjectors, load_hook_from_bytes};
@@ -22,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Locate the built `headroom-hook` cdylib in the target dir (mirrors the loader's hook_plugin_path).
-/// `[package] name = "headroom-hook"` -> cargo's cdylib filename is `libheadroom_hook.{so,dylib}`.
+/// `[package] name = "headroom-hook"` -> cargo's cdylib filename is `libbusbar_hook_headroom.{so,dylib}`.
 ///
 /// Checks BOTH `<profile_dir>/<name>` (the "uplifted" copy Cargo produces only when `[lib]` is a
 /// ROOT build target of the invocation, e.g. `cargo build --all-targets`) AND
@@ -31,13 +29,12 @@ use std::time::Duration;
 /// the cdylib to the top-level profile dir, only to `target/deps` — checking only `profile_dir`
 /// silently finds nothing even though the cdylib really was built, so every test below would
 /// no-op via this function's `None` return, appearing to pass without exercising a single line of
-/// the real cdylib. Same fix already applied to store-postgres-plugin's, auth-oidc-plugin's,
-/// webrequest-hook's, and busbarAI core's hook-test-plugin's equivalent `plugin_path()` helpers.
+/// the real cdylib.
 fn plugin_path() -> Option<std::path::PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
-        let name = busbar_plugin_loader::plugin_library_filename("headroom_hook");
+        let name = busbar_plugin_loader::plugin_library_filename("busbar_hook_headroom");
         let uplifted = profile_dir.join(&name);
         let raw = profile_dir.join("deps").join(&name);
         [uplifted, raw]
@@ -108,13 +105,13 @@ fn projectors() -> Arc<HookProjectors> {
         }),
         normalize: Box::new(|v, cands| {
             let Some(order) = v.get("order").and_then(|o| o.as_array()) else {
-                return RoutingDecision::Abstain;
+                return Ok(RoutingDecision::Abstain);
             };
             let valid: std::collections::HashSet<usize> = cands.iter().map(|c| c.idx).collect();
-            RoutingDecision::from_ranked(
+            Ok(RoutingDecision::from_ranked(
                 order.iter().filter_map(|x| x.as_u64().map(|x| x as usize)),
                 &valid,
-            )
+            ))
         }),
         transform_outcome: Box::new(|v| {
             match v
@@ -123,7 +120,7 @@ fn projectors() -> Arc<HookProjectors> {
                 .and_then(|m| m.as_array())
             {
                 Some(msgs) if !msgs.is_empty() => {
-                    TransformOutcome::Rewrite(busbar_api::RewriteReply {
+                    TransformOutcome::Rewrite(busbar_contract::hooks::RewriteReply {
                         messages: msgs.clone(),
                         tools: Vec::new(),
                     })
@@ -132,7 +129,7 @@ fn projectors() -> Arc<HookProjectors> {
             }
         }),
         status: Box::new(|v| {
-            v.get("status").map(|s| busbar_api::HookStatus {
+            v.get("status").map(|s| busbar_contract::hooks::HookStatus {
                 settings_version: s.get("settings_version").and_then(|x| x.as_u64()),
                 settings: s.get("settings").and_then(|x| x.as_object()).cloned(),
                 metrics: s.get("metrics").and_then(|m| m.as_array()).cloned(),
@@ -164,13 +161,11 @@ fn load(settings: &str) -> Arc<dyn RoutingPolicy> {
 fn req_with_history(history: String, ask: &str) -> RoutingRequest<'static> {
     let total_chars = history.len() + ask.len();
     RoutingRequest {
-        // A fixed correlation id: these fixtures assert on the gate's DECISION, and nothing in the
-        // headroom policy reads the id, so a constant keeps two otherwise-identical requests
-        // comparable instead of introducing a value that differs run to run.
-        request_id: 1,
-        // No signals: the engine only populates the bag for signals a hook asked for, and the
-        // headroom policy asks for none — an empty bag is what it is really handed in production.
-        signals: Default::default(),
+        // A DISTINCT non-zero correlation id per fixture (core stamps a real per-request `u64` at
+        // ingress; `0` is what an unstamped/defaulted projection looks like). Nothing asserts on it
+        // today — these projectors don't carry it onto the wire — but the fixture should look like a
+        // real request, so if the projection ever grows the id the two fixtures stay tellable apart.
+        request_id: 1001,
         pool: "p",
         ingress_protocol: "anthropic",
         requested_model: None,
@@ -181,7 +176,7 @@ fn req_with_history(history: String, ask: &str) -> RoutingRequest<'static> {
         system_chars: 0,
         max_tokens: None,
         stream: false,
-        prompt: Some(busbar_api::PromptProjection {
+        prompt: Some(busbar_contract::hooks::PromptProjection {
             system: None,
             messages: vec![
                 ("user".into(), history.into()),
@@ -189,14 +184,17 @@ fn req_with_history(history: String, ask: &str) -> RoutingRequest<'static> {
             ],
         }),
         identity: None,
+        // The DEFAULT (empty) declared-signal bag: this gate declares no request-phase signals, so
+        // the engine hands it exactly this — an empty bag — on every real request, and the gate's
+        // behaviour on that default path is what these tests assert.
+        signals: Default::default(),
     }
 }
 
 /// A request with NO prompt (grant absent): the projector carries no prompt keys → the gate abstains.
 fn req_without_prompt() -> RoutingRequest<'static> {
     RoutingRequest {
-        request_id: 2,
-        signals: Default::default(),
+        request_id: 1002,
         pool: "p",
         ingress_protocol: "anthropic",
         requested_model: None,
@@ -209,6 +207,7 @@ fn req_without_prompt() -> RoutingRequest<'static> {
         stream: false,
         prompt: None,
         identity: None,
+        signals: Default::default(),
     }
 }
 
@@ -226,6 +225,7 @@ fn cand(idx: usize) -> Candidate<'static> {
         available_concurrency: 1,
         budget_remaining: None,
         rate_headroom: None,
+        // Candidate-phase declared signals: empty, same reason as the request bag above.
         signals: Default::default(),
     }
 }
