@@ -62,7 +62,7 @@ models:
 # busbar 1.5.3 retired the inline hook-instance form that used to sit under `pools.*.hooks`.
 hooks:
   busbar-headroom:
-    module: busbar-headroom
+    module: busbar-hook-headroom
     kind: gate
     prompt: rw
     timeout_ms: 50

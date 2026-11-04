@@ -1,8 +1,8 @@
 # headroom-hook container image — DEPRECATED / NOT CURRENTLY BUILDABLE.
 #
 # This Dockerfile describes the RETIRED pre-dlopen-ABI architecture: a standalone
-# `headroom-hook` binary serving busbar's old Unix-socket hook wire. Since "Port
-# headroom-hook to busbar's signed dlopen plugin ABI", this crate
+# `headroom-hook` binary serving busbar's old Unix-socket hook wire. Since
+# headroom-hook became a signed dlopen plugin, this crate
 # builds ONLY a cdylib (`crate-type = ["cdylib", "rlib"]`, no `[[bin]]`, no `fn main`)
 # that busbar dlopen's in-process — there is no more standalone binary for this
 # Dockerfile's `COPY binaries/${TARGETARCH}/headroom-hook /headroom-hook` line to copy,
@@ -14,12 +14,12 @@
 #
 # For "one container, zero config, busbar + headroom together" today, use
 # getbusbar/busbar-headroom instead (docker/bundle/Dockerfile,
-# .github/workflows/docker-bundle.yml) — see README.md's "Two ways to run" section.
+# .github/workflows/docker-bundle.yml) — see README.md's "Install and run" section.
 # Alternatively, release.yml's signed plugin tarball (drop into an existing busbar's
 # plugins.dir) is the other real release path — see README.md "Install and run".
-# Whether this standalone image concept is revived (e.g. as a from-source dlopen sidecar
-# loader) or simply deleted is still open; this header only documents why the file as it
-# stands no longer describes anything buildable.
+# Whether the standalone image concept is worth reviving (e.g. as a from-source dlopen
+# sidecar loader) or should simply be deleted is still open; this header documents why
+# the file as it stands no longer describes anything buildable.
 #
 # ---- Everything below this point is the ORIGINAL (stale) socket-transport content,
 # ---- left as-is / historical reference. Do not trust it against the current code.

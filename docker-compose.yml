@@ -2,8 +2,8 @@
 #
 # This file composes two containers around a shared Unix socket — the RETIRED
 # pre-dlopen-ABI transport. headroom-hook has not shipped a standalone binary (and so
-# no getbusbar/headroom-hook image build has succeeded) since "Port headroom-hook to
-# busbar's signed dlopen plugin ABI": the plugin is now an in-process
+# no getbusbar/headroom-hook image build has succeeded) since it became
+# a signed dlopen plugin: the plugin is now an in-process
 # cdylib busbar dlopen's itself, not a second process with a socket to connect to.
 #
 # For "one container, zero config, busbar + headroom together" today, use
@@ -11,7 +11,7 @@
 #
 #     docker run -d -p 8080:8080 -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN getbusbar/busbar-headroom
 #
-# See README.md's "Two ways to run" section (and docker/bundle/Dockerfile /
+# See README.md's "Install and run" section (and docker/bundle/Dockerfile /
 # .github/workflows/docker-bundle.yml for how that image is built). This compose file
 # is left as historical reference only — do not trust it against the current code.
 #
@@ -25,8 +25,8 @@
 #
 # Copy-paste to run it (grabs this file + a starter busbar config):
 #
-#     curl -fsSL -O https://raw.githubusercontent.com/GetBusbar/headroom-hook/main/docker-compose.yml
-#     curl -fsSL -o config.yaml https://raw.githubusercontent.com/GetBusbar/headroom-hook/main/config.example.yaml
+#     curl -fsSL -O https://raw.githubusercontent.com/GetBusbar/busbar-hook-headroom/main/docker-compose.yml
+#     curl -fsSL -o config.yaml https://raw.githubusercontent.com/GetBusbar/busbar-hook-headroom/main/config.example.yaml
 #     export ANTHROPIC_KEY=sk-ant-...    # or edit config.yaml for your provider
 #     docker compose up
 #

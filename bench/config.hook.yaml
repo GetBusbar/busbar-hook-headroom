@@ -20,7 +20,7 @@ models: { bench-model: { provider: mock, max_concurrent: 256 } }
 # made busbar refuse to boot outright, so this bench measured nothing against 1.5.3.
 hooks:
   busbar-headroom:
-    module: busbar-headroom
+    module: busbar-hook-headroom
     kind: gate
     prompt: rw
     timeout_ms: 25

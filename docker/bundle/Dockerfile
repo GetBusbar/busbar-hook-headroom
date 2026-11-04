@@ -5,32 +5,32 @@
 # provider key, and compression is already wired in — no separate plugin install step.
 #
 # It is DISTINCT from:
-#   - getbusbar/busbar (busbarAI's own image): plugin-free, same treatment every plugin gets.
+#   - getbusbar/busbar (busbar's own image): plugin-free, same treatment every plugin gets.
 #     If you want a DIFFERENT plugin (or a custom set), start there and drop in tarballs
-#     yourself (docs/plugins.md in busbarAI).
+#     yourself (docs/plugins.md in busbar).
 #   - getbusbar/headroom-hook (this repo's OWN image, see the root Dockerfile): that image
 #     predates busbar's dlopen plugin ABI and describes a retired Unix-socket transport this
 #     repo no longer builds a binary for — see that Dockerfile's header for the deprecation
 #     note. This bundle supersedes it as the "just run Headroom" path.
 #
 # FROM scratch, because the binary is the whole product. The busbar binary is built from a sibling
-# ../busbarAI checkout (source of truth for busbar itself, see
-# .github/workflows/docker-bundle.yml) with the SAME PGO-mandatory release build busbarAI's own
+# ../busbar checkout (source of truth for busbar itself, see
+# .github/workflows/docker-bundle.yml) with the SAME PGO-mandatory release build busbar's own
 # release/docker pipelines use, so this image's busbar binary is equivalently optimized, not a
 # naive debug build. CA roots are compiled into the binary (webpki-roots), so no /etc/ssl needed.
 #
-# busbar here is DYNAMICALLY linked against musl, NOT static-pie like busbarAI's own image, and
+# busbar here is DYNAMICALLY linked against musl, NOT static-pie like busbar's own image, and
 # that difference is load-bearing rather than incidental. A fully static musl binary has no
 # dynamic loader in it at all, so dlopen() is a stub that always fails: every version of this
 # bundle built before this change died at boot with
 #
-#   [warn] memfd load unavailable for plugin 'busbar-headroom' (... Dynamic loading not supported)
-#   [error] gate hook 'busbar-headroom' (plugin 'busbar-headroom') failed to open; refusing to
+#   [warn] memfd load unavailable for plugin 'busbar-hook-headroom' (... Dynamic loading not supported)
+#   [error] gate hook 'busbar-hook-headroom' (plugin 'busbar-hook-headroom') failed to open; refusing to
 #           boot/reload with a silently-absent admission gate (fail-closed): failed to load
-#           plugin 'busbar-headroom': Dynamic loading not supported
+#           plugin 'busbar-hook-headroom': Dynamic loading not supported
 #
 # which made THIS IMAGE'S ENTIRE REASON FOR EXISTING non-functional: the whole point of the
-# bundle is that the plugin is pre-loaded. busbarAI's own getbusbar/busbar image can stay static
+# bundle is that the plugin is pre-loaded. busbar's own getbusbar/busbar image can stay static
 # because it ships plugin-free; a bundle cannot. So busbar is built with crt-static disabled in
 # the same musl-native rust:alpine container as the cdylib, and the musl DYNAMIC LOADER
 # (/lib/ld-musl-<arch>.so.1, which is the busbar binary's PT_INTERP) is carried in alongside the
@@ -54,10 +54,9 @@
 # workflow), which makes it a normally-dynamically-linked musl/C++ shared object instead of the
 # usual self-contained static-pie one. Bundling its exact runtime libs (built in the same
 # musl-native container, so the ABI matches) is what makes dlopen() succeed in a FROM-scratch
-# image that otherwise has no libc at all. This whole mechanism — the musl-native rust:alpine
-# build container, crt-static disabled, runtime-lib extraction — is ported verbatim from
-# busbarAI's own image build, which used to bundle headroom this exact way before that
-# responsibility moved to this repo.
+# image that otherwise has no libc at all. The mechanism — the musl-native rust:alpine build
+# container, crt-static disabled, runtime-lib extraction — is the same one busbar's own image
+# build uses for this cdylib.
 #
 # Run (zero-config quickstart — headroom active, one provider):
 #   docker run -d -p 8080:8080 \
@@ -79,13 +78,11 @@
 # outlive the container - see docker/bundle/config.yaml.)
 # Seed /tmp: busbar's plugin loader prefers a zero-disk Linux memfd load, but falls back to
 # private-temp-file staging (busbar-plugins-*/ under the OS temp dir) whenever memfd_create is
-# unavailable to the process — OBSERVED locally (colima/Docker Desktop on Apple Silicon, emulated
-# linux/arm64) while building and smoke-testing this image; not independently confirmed whether a
-# real GitHub Actions ubuntu runner hits the same fallback, but seeding /tmp costs nothing and
-# closes the gap either way. FROM scratch ships with no /tmp directory at all, so that fallback
-# used to fail closed with "No such file or directory" (and, before the `--chmod=1777` below was
-# added, with "Permission denied" — BuildKit's legacy builder was observed to silently drop the
-# sticky bit on a plain multi-stage COPY, so it's forced explicitly). A tiny busybox stage seeds a
+# unavailable to the process, which happens under emulated linux/arm64 on Apple Silicon among
+# others. FROM scratch ships with no /tmp directory at all, so that fallback fails closed with
+# "No such file or directory"; `--chmod=1777` below is explicit because BuildKit's legacy builder
+# can silently drop the sticky bit on a plain multi-stage COPY, giving "Permission denied"
+# instead. A tiny busybox stage seeds a
 # real, world-writable /tmp so the fallback path works wherever memfd isn't available, without
 # adding anything to the final image but the directory entry itself.
 FROM busybox:latest AS tmp-seed
