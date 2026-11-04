@@ -253,7 +253,8 @@ Every series carries a `pool` label, so one process serving N pools shows N rows
 Two caveats worth stating rather than discovering. The token and dollar figures are derived from a
 BYTE count divided by a chars-per-token constant, so on text that is not mostly ASCII (CJK, emoji,
 any script above the Latin range) they over-report by roughly the UTF-8 expansion factor. The
-savings PERCENTAGE is unaffected, since both sides of the ratio are counted the same way. And the
+savings percentage is also a byte-based estimate; a change in language or script mix
+can change its relationship to actual token savings. And the
 `headroom_*` names mirror Headroom's own `/metrics` exposition verbatim, so a dashboard built for
 Headroom reads them off busbar unmodified (see `grafana/README.md`).
 
@@ -336,3 +337,13 @@ cargo test --workspace --locked
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
+
+## Differences from 1.5.5
+
+Invalid configuration and settings diagnostics no longer echo supplied keys or
+values.
+Known setting names and numeric bounds remain available for troubleshooting without
+copying accidentally supplied credentials into operator logs.
+
+Request and input counters now include granted prompts with zero or one message;
+these requests still pass through without a rewrite.

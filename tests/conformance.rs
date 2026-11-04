@@ -17,6 +17,8 @@
 //! savings bar nothing can clear) yields a transcript that differs from the linked one — so the
 //! comparison is not vacuous.
 
+mod support;
+
 use busbar_contract::hooks::{
     HookStatus, PromptProjection, RoutingDecision, RoutingRequest, TransformOutcome,
 };
@@ -97,9 +99,8 @@ fn linked_registry() -> PluginRegistry {
 /// THE DROPPED-IN DOOR: `lib` signed first-party under `manifest` into a fresh `plugins/`
 /// directory, scanned under a policy holding the release key.
 fn dropped(tag: &str, manifest: Manifest, lib: &[u8]) -> PluginRegistry {
-    let dir = std::env::temp_dir().join(format!("headroom-conf-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let work = support::TestDir::new(&format!("headroom-conf-{tag}"));
+    let dir = work.path();
     let signed = sign(&release(), manifest, lib);
     let tarball = busbar_plugin_loader::tarball::package(&signed, "libheadroom.so", lib).unwrap();
     std::fs::write(dir.join("headroom.tar.gz"), tarball).unwrap();
@@ -113,7 +114,7 @@ fn dropped(tag: &str, manifest: Manifest, lib: &[u8]) -> PluginRegistry {
         allow_third_party: false,
         min_versions: Default::default(),
     };
-    busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("the signed gate scans")
+    busbar_plugin_loader::scan_and_validate(dir, &policy).expect("the signed gate scans")
 }
 
 /// The engine-side projectors (fail-closed shims standing in for the engine's `hooks::wire`). The

@@ -411,10 +411,13 @@ fn status_reports_headroom_named_metrics() {
         min["value"].as_f64().unwrap() > 0.0,
         "overhead_us_min must be set from the first sample, not left at its zero default"
     );
-    assert_eq!(
-        by_name("headroom_overhead_ms_max").unwrap()["type"],
-        "gauge"
+    let max = by_name("headroom_overhead_ms_max").expect("overhead maximum");
+    assert_eq!(max["type"], "gauge");
+    assert!(
+        max["value"].as_f64().unwrap() >= min["value"].as_f64().unwrap(),
+        "the maximum must include the observed sample"
     );
+    assert!(max["value"].as_f64().unwrap() <= sum["value"].as_f64().unwrap());
     // No histograms — the real proxy has none.
     assert!(
         m.iter().all(|e| e["type"] != "histogram"),
@@ -682,4 +685,45 @@ fn dashboard_widgets_reference_emitted_metric_names() {
             "widget metric {metric:?} is never emitted by build_status: {emitted:?}"
         );
     }
+}
+
+#[test]
+fn invalid_settings_do_not_echo_arbitrary_input() {
+    let secret = "private-token-do-not-log";
+    for key in ["target_ratio", "min_savings_pct", "price_udollars_per_ktok"] {
+        let settings = serde_json::Map::from_iter([(key.to_string(), json!(secret))]);
+        let error = apply_settings(&settings).err().expect("reject wrong type");
+        assert!(!error.contains(secret));
+        assert!(error.contains(key));
+        let settings = serde_json::Map::from_iter([(key.to_string(), json!(1234567890123456_u64))]);
+        let error = apply_settings(&settings)
+            .err()
+            .expect("reject out-of-range value");
+        assert!(!error.contains("1234567890123456"));
+        assert!(error.contains(key));
+    }
+    let settings = serde_json::Map::from_iter([(secret.to_string(), json!(0))]);
+    let error = apply_settings(&settings)
+        .err()
+        .expect("reject unknown setting");
+    assert!(!error.contains(secret));
+}
+
+#[test]
+fn single_message_and_empty_history_are_counted_without_rewriting() {
+    let knobs = locked(Knobs::default());
+    let metrics = Mutex::new(Metrics::default());
+    let payload = transform_payload(vec![("user", "hello".to_string())]);
+    assert_eq!(run_transform(&payload, &knobs, &metrics), json!({}));
+    assert_eq!(
+        run_transform(&transform_payload(vec![]), &knobs, &metrics),
+        json!({})
+    );
+    let status = build_status(&knobs, &metrics);
+    let series = status["status"]["metrics"].as_array().unwrap();
+    let value = |name: &str| series.iter().find(|m| m["name"] == name).unwrap()["value"].clone();
+    assert_eq!(value("headroom_requests_total"), 2);
+    assert_eq!(value("headroom_tokens_input_total"), 2);
+    assert_eq!(value("headroom_tokens_saved_total"), 0);
+    assert_eq!(value("headroom_overhead_ms_count"), 2);
 }

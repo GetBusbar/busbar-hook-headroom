@@ -218,7 +218,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(rate(headroom_overhead_ms_sum{pool=~\"$pool\", hook=~\"$hook\"}[$__rate_interval])) / clamp_min(sum(rate(headroom_overhead_ms_count{pool=~\"$pool\", hook=~\"$hook\"}[$__rate_interval])), 1)",
+          "expr": "sum(rate(headroom_overhead_ms_sum{pool=~\"$pool\", hook=~\"$hook\"}[$__rate_interval])) / sum(rate(headroom_overhead_ms_count{pool=~\"$pool\", hook=~\"$hook\"}[$__rate_interval]))",
           "legendFormat": "mean overhead",
           "refId": "A"
         }
@@ -302,7 +302,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(rate(headroom_overhead_ms_sum{pool=~\"$pool\", hook=~\"$hook\"}[$__rate_interval])) / clamp_min(sum(rate(headroom_overhead_ms_count{pool=~\"$pool\", hook=~\"$hook\"}[$__rate_interval])), 1)",
+          "expr": "sum(rate(headroom_overhead_ms_sum{pool=~\"$pool\", hook=~\"$hook\"}[$__rate_interval])) / sum(rate(headroom_overhead_ms_count{pool=~\"$pool\", hook=~\"$hook\"}[$__rate_interval]))",
           "legendFormat": "mean",
           "refId": "A"
         },

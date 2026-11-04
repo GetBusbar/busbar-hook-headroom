@@ -46,6 +46,8 @@
 //! for a `hook` plugin, where the "real effect" is an observed request mutation instead of a
 //! persisted row.
 
+mod support;
+
 use base64::Engine as _;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -277,14 +279,8 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
 
     let (busbar_bin, pack_bin) = build_real_binaries();
 
-    let work = std::env::temp_dir().join(format!(
-        "headroom-admin-e2e-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let work_guard = support::TestDir::new("headroom-admin-e2e");
+    let work = work_guard.path();
     let plugins_dir = work.join("plugins");
     std::fs::create_dir_all(&plugins_dir).unwrap();
 

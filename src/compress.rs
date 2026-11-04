@@ -97,33 +97,31 @@ pub fn apply_settings(settings: &serde_json::Map<String, Value>) -> Result<Knobs
             "target_ratio" => {
                 let v = value
                     .as_f64()
-                    .ok_or_else(|| format!("target_ratio must be a number, got {value}"))?;
+                    .ok_or_else(|| "target_ratio must be a number".to_string())?;
                 if !(0.05..=1.0).contains(&v) {
-                    return Err(format!("target_ratio must be in 0.05..=1.0, got {v}"));
+                    return Err("target_ratio must be in 0.05..=1.0".to_string());
                 }
                 knobs.target_ratio = v;
             }
             "min_savings_pct" => {
                 let v = value
                     .as_f64()
-                    .ok_or_else(|| format!("min_savings_pct must be a number, got {value}"))?;
+                    .ok_or_else(|| "min_savings_pct must be a number".to_string())?;
                 if !(0.0..=100.0).contains(&v) {
-                    return Err(format!("min_savings_pct must be in 0..=100, got {v}"));
+                    return Err("min_savings_pct must be in 0..=100".to_string());
                 }
                 knobs.min_savings_pct = v;
             }
             "price_udollars_per_ktok" => {
                 let v = value.as_f64().ok_or_else(|| {
-                    format!("price_udollars_per_ktok must be a number, got {value}")
+                    "price_udollars_per_ktok must be a number".to_string()
                 })?;
                 if !(0.0..=1_000_000.0).contains(&v) {
-                    return Err(format!(
-                        "price_udollars_per_ktok must be in 0..=1_000_000, got {v}"
-                    ));
+                    return Err("price_udollars_per_ktok must be in 0..=1_000_000".to_string());
                 }
                 knobs.price_udollars_per_ktok = v;
             }
-            other => return Err(format!("unknown setting {other:?}")),
+            _ => return Err("unknown setting; expected target_ratio, min_savings_pct, or price_udollars_per_ktok".to_string()),
         }
     }
     Ok(knobs)
@@ -240,27 +238,22 @@ pub(crate) fn compress_or_keep(
 pub fn run_transform(payload: &Value, knobs: &RwLock<Knobs>, metrics: &Mutex<Metrics>) -> Value {
     let abstain = json!({});
     // Not our shape / no prompt projection (e.g. a decide fire, or a grant misconfig) -> abstain.
-    let Ok(parsed) = serde_json::from_value::<HookLine>(payload.clone()) else {
+    let Ok(parsed) = HookLine::deserialize(payload) else {
         return abstain;
     };
     let pool = parsed.request.pool.unwrap_or_else(|| "unknown".to_string());
     let Some(messages) = parsed.request.messages else {
         return abstain;
     };
-    if messages.len() < 2 {
-        // Nothing before the ask to compress.
-        return abstain;
-    }
-
     let knobs_v = *knobs.read().unwrap_or_else(|e| e.into_inner());
     let started = std::time::Instant::now();
-    let query = messages.last().map(|m| m.text.clone()).unwrap_or_default();
+    let query = messages.last().map(|m| m.text.as_str()).unwrap_or_default();
     let crusher = TextCrusher::default();
 
     let mut chars_before = 0usize;
     let mut chars_after = 0usize;
     let mut out: Vec<Value> = Vec::with_capacity(messages.len());
-    let last = messages.len() - 1;
+    let last = messages.len().saturating_sub(1);
     for (i, m) in messages.iter().enumerate() {
         chars_before += m.text.len();
         let text = if i == last || m.role.eq_ignore_ascii_case("system") {
@@ -276,7 +269,7 @@ pub fn run_transform(payload: &Value, knobs: &RwLock<Knobs>, metrics: &Mutex<Met
             // panics on some input, keep that message verbatim instead of dying — a hook must
             // never crash on malformed/adversarial content. (`AssertUnwindSafe` is sound here:
             // the closure only reads `&m.text`/`&query` and the crusher is dropped either way.)
-            compress_or_keep(&m.text, &query, knobs_v.target_ratio, |text, q, ratio| {
+            compress_or_keep(&m.text, query, knobs_v.target_ratio, |text, q, ratio| {
                 crusher.compress(text, q, Some(ratio)).compressed
             })
         };

@@ -1,7 +1,7 @@
 # headroom-hook benchmarks (Docker)
 
 One harness, one command. Every published number is produced by
-[`docker_ab.py`](docker_ab.py) running the **shipped `getbusbar/busbar` image** with
+[`docker_ab.py`](docker_ab.py) running an **explicitly selected compatible Busbar image** with
 the Headroom `kind: hook` dlopen plugin — built and packed from THIS checkout — loaded
 into it, exactly the way a real install runs the 1.5.0 signed-plugin ABI. There is no
 separate `busbar-hook-headroom` image or container: since the port to busbar's plugin ABI, a
@@ -10,21 +10,25 @@ hook is a `cdylib` busbar loads in-process, not a sidecar with its own image.
 ## Run it
 
 ```sh
-python3 docker_ab.py --requests 1000 --concurrency 1 --history-kb 11
+BUSBAR_IMAGE=your-compatible-busbar-image python3 docker_ab.py --requests 1000 --concurrency 1 --history-kb 11
 ```
 
 Needs Docker, Python 3 (stdlib only), and a Rust toolchain (`cargo`). It builds the
 Headroom cdylib from this checkout, packs it as an unsigned dev-mode tarball with
-`busbar-plugin-pack` (built from the busbar checkout — see `BUSBAR_DIR` in
-[`docker_ab.py`](docker_ab.py) if yours isn't laid out at the interim path
-`headroom-hook/Cargo.toml` currently points at), pulls `getbusbar/busbar` if absent,
+`busbar-plugin-pack` (built from the busbar checkout — set `BUSBAR_DIR` to a checkout
+at the revision in `.busbar-ref`, or place it in the sibling `../busbar` directory), uses the image selected by `BUSBAR_IMAGE`,
 then runs a baseline phase (busbar alone, `config.baseline.yaml`) and a hook phase
 (busbar with the plugin dlopen'd, `config.hook.yaml`) through the same deterministic
 request stream, writing `results/docker_ab.json`. Pass `--skip-plugin-build` to reuse
-an already-packed `plugins/busbar-headroom.tar.gz`.
+an already-packed `plugins/busbar-hook-headroom.tar.gz`.
 
 Flags: `--requests`, `--concurrency`, `--warmup`, `--history-kb`, `--delay-ms`,
-`--skip-plugin-build`. Pin the image with `BUSBAR_IMAGE=`.
+`--skip-plugin-build`. `BUSBAR_IMAGE` is required: select an image built from the
+revision in `.busbar-ref`, with dynamic loading enabled and the same libc and
+architecture as the plugin build. A native Ubuntu build produces a glibc plugin;
+it cannot load in a musl-only image. A fully static musl Busbar cannot load plugins
+at all. The harness does not assume that an unpinned official `latest` image meets
+these requirements.
 
 **Host arch note:** the packed plugin must dlopen inside the busbar container, so it
 must be built for the SAME OS/arch as that container (Linux). On a Linux CI runner

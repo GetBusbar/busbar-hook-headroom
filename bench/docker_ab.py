@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Busbar Inc and contributors
 #
 # Docker A/B benchmark for the Headroom hook — the same methodology as busbar's own *_ab.py
-# harnesses, but driven against a SHIPPED busbar image (getbusbar/busbar) the way a real install
+# harnesses, driven against an explicitly selected compatible busbar image the way a real install
 # runs it. It measures the hook's added cost on busbar's OWN clock (`busbar;dur`), so the
 # harness/network floor cancels in the with/without-hook delta.
 #
@@ -28,7 +28,7 @@
 # `../scripts/local_verify.sh`-style native verification instead — a locally-built .dylib cannot
 # dlopen inside a Linux container.
 #
-#   python3 docker_ab.py --requests 1000 --concurrency 1 --history-kb 11 [--delay-ms 0]
+#   BUSBAR_IMAGE=<compatible-image> python3 docker_ab.py --requests 1000 --concurrency 1 --history-kb 11
 #
 # Stdlib only (+ the docker CLI + cargo). Writes results/docker_ab.json and prints a summary.
 
@@ -48,7 +48,7 @@ REPO = os.path.dirname(HERE)  # headroom-hook checkout root
 sys.path.insert(0, HERE)  # corpus.py is a sibling in this folder
 import corpus  # noqa: E402
 
-BUSBAR_IMAGE = os.environ.get("BUSBAR_IMAGE", "getbusbar/busbar:latest")
+BUSBAR_IMAGE = os.environ.get("BUSBAR_IMAGE")
 MOCK = "hb-mock"
 BUSBAR = "hb-busbar"
 # INTERNAL ports (inside the shared netns — fixed, never collide): busbar listens on
@@ -127,41 +127,39 @@ def mock_get(path):
 
 def load(body, n, conc, warmup):
     """Drive n keep-alive POSTs (after `warmup`), collect busbar;dur µs samples."""
-    hdrs = {"content-type": "application/json"}  # auth.chain: [] in bench configs — no bearer token
+    if n <= 0 or conc <= 0 or warmup < 0:
+        raise ValueError("requests and concurrency must be positive; warmup must be nonnegative")
+    hdrs = {"content-type": "application/json"}
 
     def run(count):
         durs = []
         conn = http.client.HTTPConnection("localhost", HOST_PORT, timeout=30)
-        for _ in range(count):
-            conn.request("POST", "/v1/chat/completions", body=body, headers=hdrs)
-            r = conn.getresponse()
-            st = r.getheader("Server-Timing")
-            r.read()
-            d = busbar_dur_us(st)
-            if d is not None:
+        try:
+            for _ in range(count):
+                conn.request("POST", "/v1/chat/completions", body=body, headers=hdrs)
+                r = conn.getresponse()
+                st = r.getheader("Server-Timing")
+                r.read()
+                if not 200 <= r.status < 300:
+                    raise RuntimeError(f"benchmark request returned HTTP {r.status}")
+                d = busbar_dur_us(st)
+                if d is None:
+                    raise RuntimeError("benchmark response has no valid busbar Server-Timing")
                 durs.append(d)
-        conn.close()
+        finally:
+            conn.close()
         return durs
 
-    if conc <= 1:
-        run(warmup)
-        return run(n)
-    # simple threaded fan-out for concurrency > 1
-    import threading
-
     run(warmup)
-    out, per = [], n // conc
-    lock = threading.Lock()
+    if conc == 1:
+        return run(n)
+    from concurrent.futures import ThreadPoolExecutor
 
-    def w():
-        d = run(per)
-        with lock:
-            out.extend(d)
-
-    ts = [threading.Thread(target=w) for _ in range(conc)]
-    [t.start() for t in ts]
-    [t.join() for t in ts]
-    return out
+    workers = min(conc, n)
+    per, remainder = divmod(n, workers)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(run, per + (i < remainder)) for i in range(workers)]
+        return [duration for future in futures for duration in future.result()]
 
 
 def start_mock(delay_ms):
@@ -176,38 +174,26 @@ def start_mock(delay_ms):
 
 
 def busbar_dir():
-    """Locate the busbar checkout that provides busbar-plugin-pack.
-
-    headroom-hook/Cargo.toml currently carries an INTERIM absolute path dependency on
-    busbar-plugin-sdk (busbar is not yet public — see the Cargo.toml comment). Parse that same
-    path out of Cargo.toml rather than hardcoding it a second time here, so this script and
-    Cargo.toml can only drift together. Override with BUSBAR_DIR for a CI checkout laid out
-    differently (e.g. busbar's own release.yml checks headroom-hook out as a ../ sibling and
-    patches this path — see that workflow's "Patch headroom-hook's interim path dependencies" step).
-    """
-    # BUSBARAI_DIR is the pre-rename (busbarAI -> busbar) spelling, still honored so an existing
-    # invocation keeps working.
-    env = os.environ.get("BUSBAR_DIR") or os.environ.get("BUSBARAI_DIR")
-    if env:
-        return env
-    cargo_toml = open(os.path.join(REPO, "Cargo.toml")).read()
-    m = re.search(r'path\s*=\s*"([^"]+)/crates/plugin-sdk"', cargo_toml)
-    if not m:
-        sys.exit("could not locate busbar checkout: no busbar-plugin-sdk path dep in Cargo.toml "
-                 "and BUSBAR_DIR is not set")
-    return m.group(1)
+    """Locate the pinned busbar source checkout used to build the packer."""
+    supplied = os.environ.get("BUSBAR_DIR") or os.environ.get("BUSBARAI_DIR")
+    candidate = supplied or os.path.join(os.path.dirname(REPO), "busbar")
+    candidate = os.path.abspath(candidate)
+    manifest = os.path.join(candidate, "crates", "plugin-loader", "Cargo.toml")
+    if not os.path.isfile(manifest):
+        sys.exit("set BUSBAR_DIR to a busbar checkout containing crates/plugin-loader")
+    return candidate
 
 
 def prep_plugin():
     """Build the Headroom cdylib from THIS checkout and pack it as an unsigned dev tarball.
 
     Requires the host arch/OS to match the busbar container's (Linux) — see the module docstring.
-    Writes plugins/busbar-headroom.tar.gz, bind-mounted read-only at /etc/busbar/plugins by
+    Writes plugins/busbar-hook-headroom.tar.gz, bind-mounted read-only at /etc/busbar/plugins by
     start_busbar() for the hook phase. config.hook.yaml sets plugins.trust.allow_unsigned: true to
     accept it; a real deployment installs busbar's release-CI-signed tarball instead.
     """
     print("building headroom-hook cdylib (cargo build --release)...", file=sys.stderr)
-    sh("cargo", "build", "--release", cwd=REPO, quiet=False)
+    sh("cargo", "build", "--release", "--locked", "--lib", cwd=REPO, quiet=False)
 
     ext = "dylib" if sys.platform == "darwin" else "so"
     lib = os.path.join(REPO, "target", "release", f"libbusbar_hook_headroom.{ext}")
@@ -216,7 +202,7 @@ def prep_plugin():
 
     bdir = busbar_dir()
     print(f"building busbar-plugin-pack from {bdir} ...", file=sys.stderr)
-    sh("cargo", "build", "--release", "-p", "busbar-plugin-sdk", "--features", "pack",
+    sh("cargo", "build", "--release", "--locked", "-p", "busbar-plugin-loader", "--features", "pack",
        "--bin", "busbar-plugin-pack", cwd=bdir, quiet=False)
     pack = os.path.join(bdir, "target", "release", "busbar-plugin-pack")
     if not os.path.exists(pack):
@@ -281,13 +267,20 @@ def main():
     ap.add_argument("--history-kb", type=int, default=11)
     ap.add_argument("--delay-ms", type=int, default=0)
     ap.add_argument("--skip-plugin-build", action="store_true",
-                     help="reuse an existing plugins/busbar-headroom.tar.gz instead of rebuilding")
+                     help="reuse an existing plugins/busbar-hook-headroom.tar.gz instead of rebuilding")
     args = ap.parse_args()
+    if args.requests <= 0 or args.concurrency <= 0 or args.history_kb <= 0:
+        ap.error("requests, concurrency and history-kb must be positive")
+    if args.warmup < 0 or args.delay_ms < 0:
+        ap.error("warmup and delay-ms must be nonnegative")
+    if not BUSBAR_IMAGE:
+        ap.error("set BUSBAR_IMAGE to a dynamically linked busbar image at .busbar-ref, "
+                 "with the same libc and architecture as the plugin build")
 
     if not args.skip_plugin_build:
         prep_plugin()
     elif not os.path.exists(os.path.join(PLUGIN_DIR, "busbar-hook-headroom.tar.gz")):
-        sys.exit("--skip-plugin-build given but plugins/busbar-headroom.tar.gz does not exist")
+        sys.exit("--skip-plugin-build given but plugins/busbar-hook-headroom.tar.gz does not exist")
 
     try:
         start_mock(args.delay_ms)

@@ -3,6 +3,7 @@
 # this file plus the `plugins:` block, the top-level `hooks:` definition, and the reserved
 # `pools.hooks:` attach that wires Headroom in.
 listen: "0.0.0.0:8080"
+config: { locked: true }
 auth: { chain: [] }
 providers: { mock: { api_key: { env: BENCH_MOCK_KEY } } }
 models: { bench-model: { provider: mock, max_concurrent: 256 } }

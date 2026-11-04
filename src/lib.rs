@@ -128,8 +128,13 @@ fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
     let knobs = if cfg.trim().is_empty() {
         Knobs::default()
     } else {
-        let settings: Map<String, Value> = serde_json::from_str(cfg)
-            .map_err(|e| format!("headroom-hook: invalid plugin config: {e}"))?;
+        let settings: Map<String, Value> = serde_json::from_str(cfg).map_err(|e| {
+            format!(
+                "headroom-hook: invalid plugin config at line {}, column {}",
+                e.line(),
+                e.column()
+            )
+        })?;
         compress::apply_settings(&settings)
             .map_err(|e| format!("headroom-hook: invalid settings: {e}"))?
     };

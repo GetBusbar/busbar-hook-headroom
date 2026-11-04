@@ -195,3 +195,12 @@ fn panic_containment_degrades_to_verbatim() {
     });
     assert_eq!(ok, "original turn|ask|0.5");
 }
+
+#[test]
+fn malformed_open_config_does_not_echo_its_contents() {
+    let error = open(r#""private-config-secret""#)
+        .err()
+        .expect("nonobject config is rejected");
+    assert!(!error.contains("private-config-secret"));
+    assert!(error.contains("invalid plugin config"));
+}

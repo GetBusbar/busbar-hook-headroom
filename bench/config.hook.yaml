@@ -11,6 +11,7 @@
 # deployment drops the signed tarball busbar's release CI produces and leaves allow_unsigned unset
 # (false); see docs/plugins.md#signing-and-packaging.
 listen: "0.0.0.0:8080"
+config: { locked: true }
 auth: { chain: [] }
 providers: { mock: { api_key: { env: BENCH_MOCK_KEY } } }
 models: { bench-model: { provider: mock, max_concurrent: 256 } }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Release-gate smoke test for the headroom-hook PLUGIN, built and packed from THIS checkout, dlopen'd
-# into a single `getbusbar/busbar` container — the 1.5.0 signed `kind: hook` plugin ABI. There is no
+# into a compatible dynamically linked Busbar container through its signed `kind: hook` plugin ABI. There is no
 # separate headroom-hook image or container and no shared Unix-socket volume anymore: the port to
 # busbar's dlopen plugin ABI means a hook is a cdylib busbar loads in-process. This asserts the hook
 # ACTUALLY LOADS AND COMPRESSES, catching the class of failure `cargo test` can't:
@@ -10,14 +10,15 @@
 #   - the plugin loads but doesn't actually rewrite (a silent no-op gate) — the token-count assertion
 #     against the real mock upstream catches this.
 #
-#   scripts/docker-smoke.sh [busbar-image]
+#   scripts/docker-smoke.sh <busbar-image>
+# The image must match .busbar-ref and the plugin build's libc/architecture, and support dlopen.
 #
 # Exit 0 only if: `busbar --validate` reports the plugin loaded, the container stays UP, and a
 # compressible request ships FEWER tokens upstream than it arrived with (i.e. the rewrite reached
 # the provider).
 set -euo pipefail
 
-BUSBAR_IMAGE="${1:-getbusbar/busbar:latest}"
+BUSBAR_IMAGE="${1:?usage: scripts/docker-smoke.sh <dynamically-linked-compatible-busbar-image>}"
 HERE="$(cd "$(dirname "$0")/../bench" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 M=smoke-mock B=smoke-busbar
@@ -28,8 +29,13 @@ trap cleanup EXIT
 cleanup
 
 echo "→ build + pack the headroom-hook plugin from this checkout"
-python3 -c "import sys; sys.path.insert(0, '$HERE'); import docker_ab; docker_ab.prep_plugin()"
-test -f "$HERE/plugins/busbar-headroom.tar.gz" || { echo "✗ FAIL: plugin tarball was not produced"; exit 1; }
+python3 - "$HERE" <<'PYTHON'
+import sys
+sys.path.insert(0, sys.argv[1])
+import docker_ab
+docker_ab.prep_plugin()
+PYTHON
+test -f "$HERE/plugins/busbar-hook-headroom.tar.gz" || { echo "✗ FAIL: plugin tarball was not produced"; exit 1; }
 
 echo "→ mock upstream"
 docker run -d --name "$M" -p "$PORT:$PORT" -v "$HERE/mock_upstream.py:/mock.py:ro" \
@@ -37,7 +43,7 @@ docker run -d --name "$M" -p "$PORT:$PORT" -v "$HERE/mock_upstream.py:/mock.py:r
 sleep 2
 
 echo "→ busbar --validate ($BUSBAR_IMAGE, config.hook.yaml + packed plugin)"
-docker run --rm --entrypoint /busbar \
+docker run --rm --entrypoint /busbar -e BENCH_MOCK_KEY=x \
   -v "$HERE/config.hook.yaml:/etc/busbar/config.yaml:ro" \
   -v "$HERE/providers.mock.yaml:/etc/busbar/providers.yaml:ro" \
   -v "$HERE/plugins:/etc/busbar/plugins:ro" \
@@ -69,7 +75,7 @@ READ="$(docker exec "$M" python -c "import urllib.request as u,json;print(json.l
 # 3 uncompressed requests would be ~8496 tokens; compressed (target_ratio 0.5) is ~4266. Assert a
 # real reduction shipped, i.e. the rewrite reached the provider, not just hook-side accounting.
 echo "  tokens that reached the provider over 3 reqs: $READ (uncompressed would be ~8496)"
-if [ "$READ" -ge 7000 ]; then
+if [ "$READ" -le 0 ] || [ "$READ" -ge 7000 ]; then
   echo "✗ FAIL: no compression reached the provider — plugin loaded but is not rewriting."
   docker logs "$B" 2>&1 | tail -10
   exit 1
