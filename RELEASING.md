@@ -27,10 +27,10 @@ PR's `closed`+`merged` event), and:
 
 1. Reads the version from `main`'s `Cargo.toml`.
 2. Tags the merged commit `vX.Y.Z`.
-3. Triggers `docker.yml` and `release.yml` against that tag (via
+3. Triggers `docker-bundle.yml` and `release.yml` against that tag (via
    `workflow_dispatch`, since a `GITHUB_TOKEN`-pushed tag doesn't self-trigger
    `on: push: tags:`) — these build and publish the signed plugin tarballs and
-   the `getbusbar/headroom-hook` image.
+   the `getbusbar/busbar-headroom` image.
 
 So: **reviewing/merging the dev -> main PR is the one human touchpoint** in an
 otherwise fully automated pipeline — approve it (GitHub's normal "review
