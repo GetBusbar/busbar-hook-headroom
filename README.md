@@ -7,7 +7,6 @@ Compresses LLM chat history with the real headroom-core BM25 TextCrusher engine 
 |---|---|---|---|---|
 | `hook` | `headroom` | `busbar-hook-headroom` | 1.6.0 (pinned in `.busbar-ref`) | Apache-2.0 |
 
-[![ci](https://github.com/GetBusbar/busbar-hook-headroom/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/GetBusbar/busbar-hook-headroom/actions/workflows/ci.yml)
 <!-- fleet:header:end -->
 
 ## What it is for
