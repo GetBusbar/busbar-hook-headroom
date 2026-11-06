@@ -7,7 +7,7 @@
 #
 # with no `-v .../config.yaml:/etc/busbar/config.yaml` mount at all: one provider (anthropic),
 # one pool, and this repo's headroom-hook plugin PRE-INSTALLED (tarball baked into
-# /etc/busbar/plugins by the Dockerfile) and pre-wired as a global rewrite gate — so prompt
+# /etc/busbar/plugins by the Dockerfile) and pre-wired as a rewrite gate on the default pool — so prompt
 # compression works out of the box with no plugin setup.
 #
 # This is a minimal quickstart default, not a production template: `auth.chain: []` is an open
@@ -15,7 +15,7 @@
 # beyond a quickstart, mount your own config.yaml over this path — see busbar's own docs for the
 # full annotated walkthrough (providers, pools, auth, groups, hooks) to build one from. A mounted
 # config.yaml REPLACES this file entirely (standard Docker bind-mount override): if you want
-# headroom wired into your own config, copy the `plugins:` and `pools.*.hooks` blocks below into
+# headroom wired into your own config, copy the `plugins:`, `hooks:`, `pools.*.hooks` and `limits:` blocks below into
 # it — the tarball at /etc/busbar/plugins/busbar-headroom.tar.gz is still there either way.
 
 listen: "0.0.0.0:8080"
@@ -57,12 +57,22 @@ providers:
 models:
   claude:
     provider: anthropic
+    upstream_model: claude-sonnet-5-5   # the wire id; without it busbar sends the key `claude`
+
+# Bound the prompt a content-granted hook is shown. TextCrusher holds roughly 50x a message's size
+# in memory while it works (an 8 MB message peaked near 390 MB), on a thread busbar's timeout_ms
+# cannot cancel, so an uncapped prompt near the request body limit can exhaust the host's memory.
+# Over the cap busbar shows the hook an empty projection and the gate abstains. The cap is
+# GLOBAL: it applies to every `prompt: ro|rw` hook, so if you add a redaction or guardrail hook
+# that must see every prompt, raise or remove it (busbar's default is 0, unlimited, for that reason).
+limits:
+  hook_content_max_bytes: 1048576   # 1 MiB
 
 # Each hook instance is likewise DEFINED once here and REFERENCED by bare name from a pool.
 # busbar 1.5.3 retired the inline hook-instance form that used to sit under `pools.*.hooks`.
 hooks:
   busbar-headroom:
-    module: busbar-hook-headroom
+    module: headroom            # the plugin alias: matches the signed release tarball and a dev pack alike
     kind: gate
     prompt: rw
     timeout_ms: 50

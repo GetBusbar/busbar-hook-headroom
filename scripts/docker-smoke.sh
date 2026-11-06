@@ -20,7 +20,6 @@ set -euo pipefail
 
 BUSBAR_IMAGE="${1:?usage: scripts/docker-smoke.sh <dynamically-linked-compatible-busbar-image>}"
 HERE="$(cd "$(dirname "$0")/../bench" && pwd)"
-REPO="$(cd "$HERE/.." && pwd)"
 M=smoke-mock B=smoke-busbar
 PORT=8080 MOCKP=9001
 
@@ -40,7 +39,16 @@ test -f "$HERE/plugins/busbar-hook-headroom.tar.gz" || { echo "✗ FAIL: plugin 
 echo "→ mock upstream"
 docker run -d --name "$M" -p "$PORT:$PORT" -v "$HERE/mock_upstream.py:/mock.py:ro" \
   python:3.12-slim python /mock.py --port "$MOCKP" >/dev/null
-sleep 2
+mock_up=0
+for _ in $(seq 1 30); do
+  if docker exec "$M" python -c "import urllib.request as u;u.urlopen('http://127.0.0.1:$MOCKP/stats')" >/dev/null 2>&1; then
+    mock_up=1; break
+  fi
+  sleep 0.5
+done
+if [ "$mock_up" != 1 ]; then
+  echo "✗ FAIL: the mock upstream never answered /stats:"; docker logs "$M" 2>&1 | tail -10; exit 1
+fi
 
 echo "→ busbar --validate ($BUSBAR_IMAGE, config.hook.yaml + packed plugin)"
 docker run --rm --entrypoint /busbar -e BENCH_MOCK_KEY=x \
@@ -51,30 +59,49 @@ docker run --rm --entrypoint /busbar -e BENCH_MOCK_KEY=x \
 echo "  ✓ validate: plugin loaded cleanly"
 
 echo "→ busbar ($BUSBAR_IMAGE)"
-docker run -d --name "$B" --network "container:$M" -e BENCH_MOCK_KEY=x -e BUSBAR_STATE_FILE= \
+docker run -d --name "$B" --network "container:$M" -e BENCH_MOCK_KEY=x \
   -v "$HERE/config.hook.yaml:/etc/busbar/config.yaml:ro" \
   -v "$HERE/providers.mock.yaml:/etc/busbar/providers.yaml:ro" \
   -v "$HERE/plugins:/etc/busbar/plugins:ro" \
   "$BUSBAR_IMAGE" >/dev/null
-for i in $(seq 1 30); do curl -fsS "http://localhost:$PORT/healthz" >/dev/null 2>&1 && break; sleep 0.5; done
+healthy=0
+for _ in $(seq 1 30); do
+  if curl -fsS --max-time 2 "http://localhost:$PORT/healthz" >/dev/null 2>&1; then healthy=1; break; fi
+  sleep 0.5
+done
 # BUG CLASS: a boot/dlopen failure leaves the container exited even though --validate passed offline
 # (e.g. a runtime-only glibc/CXXABI mismatch); catch it before asserting on traffic.
 if [ "$(docker inspect -f '{{.State.Running}}' "$B")" != "true" ]; then
   echo "✗ FAIL: busbar container is not running — it crashed on startup:"; docker logs "$B" 2>&1 | tail -10; exit 1
 fi
+if [ "$healthy" != 1 ]; then
+  echo "✗ FAIL: busbar never answered /healthz:"; docker logs "$B" 2>&1 | tail -10; exit 1
+fi
 
 # Drive a deterministic COMPRESSIBLE history (two noisy tool-log messages + a short ask).
 BODY="$(cd "$HERE" && python3 -c "import corpus,json;print(json.dumps({'model':'bench-pool','messages':corpus.history_messages('tool_log',11*1024)}))")"
-docker exec "$M" python -c "import urllib.request as u;u.urlopen(u.Request('http://127.0.0.1:$MOCKP/reset',method='POST'))"
-for i in 1 2 3; do
-  curl -fsS -o /dev/null -X POST "http://localhost:$PORT/v1/chat/completions" \
-    -H 'content-type: application/json' -d "$BODY"
+traffic_failed() {
+  echo "✗ FAIL: $1"; docker logs "$B" 2>&1 | tail -10; exit 1
+}
+docker exec "$M" python -c "import urllib.request as u;u.urlopen(u.Request('http://127.0.0.1:$MOCKP/reset',method='POST'))" \
+  || traffic_failed "could not reset the mock upstream's tally"
+for _ in 1 2 3; do
+  curl -fsS --max-time 60 -o /dev/null -X POST "http://localhost:$PORT/v1/chat/completions" \
+    -H 'content-type: application/json' -d "$BODY" \
+    || traffic_failed "a compressible request through busbar did not succeed"
 done
-READ="$(docker exec "$M" python -c "import urllib.request as u,json;print(json.load(u.urlopen('http://127.0.0.1:$MOCKP/stats'))['prompt_tokens_est'])")"
+READ="$(docker exec "$M" python -c "import urllib.request as u,json;print(json.load(u.urlopen('http://127.0.0.1:$MOCKP/stats'))['prompt_tokens_est'])")" \
+  || traffic_failed "could not read the mock upstream's tally"
 
 # 3 uncompressed requests would be ~8496 tokens; compressed (target_ratio 0.5) is ~4266. Assert a
 # real reduction shipped, i.e. the rewrite reached the provider, not just hook-side accounting.
 echo "  tokens that reached the provider over 3 reqs: $READ (uncompressed would be ~8496)"
+# A reading that is not a whole number would make both `[` tests error out, and an erroring `if`
+# condition is false, so it must be refused before the comparison rather than read as a pass.
+if ! [[ "$READ" =~ ^[0-9]+$ ]]; then
+  echo "✗ FAIL: the mock upstream's token tally is not a number: '$READ'"
+  exit 1
+fi
 if [ "$READ" -le 0 ] || [ "$READ" -ge 7000 ]; then
   echo "✗ FAIL: no compression reached the provider — plugin loaded but is not rewriting."
   docker logs "$B" 2>&1 | tail -10

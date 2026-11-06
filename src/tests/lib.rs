@@ -18,9 +18,9 @@ fn open_config_handling() {
     );
 }
 
-/// The linked row states the same name the shipped tarball's manifest does (`release.yml`
-/// `manifest_name`), so config `module: busbar-hook-headroom` resolves on a build that links this
-/// crate.
+/// The linked row's name and alias. The signed release tarball's manifest is named by busbar's
+/// plugin registry (`busbar-headroom` at 1.6.0); both carry the alias `headroom`, which is what the
+/// shipped configs reference, so `module: headroom` resolves through either door.
 #[test]
 fn linked_row_states_the_shipped_manifest_name() {
     assert_eq!(linked::HOOK.0, "busbar-hook-headroom");
@@ -152,6 +152,40 @@ fn bad_configure_never_acks_and_keeps_settings() {
             "settings must survive a rejected configure: {settings:?}"
         );
     }
+}
+
+/// busbar computes settings drift by comparing each desired value with the `status` echo using
+/// exact JSON equality, where the integer `10` and the float `10.0` differ. Every shipped config
+/// writes `min_savings_pct: 10`, so the echo must hand back the pushed value as it was pushed, or the
+/// hook reports drift on every poll while running exactly what it was told.
+#[test]
+fn status_echoes_pushed_settings_exactly_as_pushed() {
+    let h = Headroom::new(Knobs::default());
+    let pushed =
+        json!({"target_ratio": 1, "min_savings_pct": 10, "price_udollars_per_ktok": 2500.5});
+    assert!(h.configure(pushed.as_object().unwrap(), 2));
+    let settings = h.status()["status"]["settings"].clone();
+    for (key, want) in pushed.as_object().unwrap() {
+        assert_eq!(
+            settings.get(key),
+            Some(want),
+            "`{key}` must echo exactly as pushed (got {settings})"
+        );
+    }
+
+    // A later push that omits keys resets them to their defaults, and the echo follows.
+    assert!(h.configure(json!({"min_savings_pct": 20}).as_object().unwrap(), 3));
+    let settings = h.status()["status"]["settings"].clone();
+    assert_eq!(settings["min_savings_pct"], json!(20));
+    assert_eq!(settings["target_ratio"], json!(0.5));
+    assert_eq!(settings["price_udollars_per_ktok"], json!(2500.0));
+
+    // A rejected push leaves the echo on the last applied settings.
+    assert!(!h.configure(json!({"min_savings_pct": 101}).as_object().unwrap(), 4));
+    assert_eq!(
+        h.status()["status"]["settings"]["min_savings_pct"],
+        json!(20)
+    );
 }
 
 /// `status` surfaces the `headroom-core` build ref alongside the ported settings/metrics shape.

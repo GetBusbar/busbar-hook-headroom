@@ -3,7 +3,7 @@
 One harness, one command. Every published number is produced by
 [`docker_ab.py`](docker_ab.py) running an **explicitly selected compatible Busbar image** with
 the Headroom `kind: hook` dlopen plugin — built and packed from THIS checkout — loaded
-into it, exactly the way a real install runs the 1.5.0 signed-plugin ABI. There is no
+into it, exactly the way a real install runs busbar's signed-plugin ABI (v2, at `.busbar-ref`). There is no
 separate `busbar-hook-headroom` image or container: since the port to busbar's plugin ABI, a
 hook is a `cdylib` busbar loads in-process, not a sidecar with its own image.
 
@@ -31,9 +31,8 @@ at all. The harness does not assume that an unpinned official `latest` image mee
 these requirements.
 
 **Host arch note:** the packed plugin must dlopen inside the busbar container, so it
-must be built for the SAME OS/arch as that container (Linux). On a Linux CI runner
-(the normal case — GitHub Actions, etc.) a plain `cargo build --release` already
-matches. On a non-Linux dev host (e.g. macOS) a locally-built `.dylib` will not load
+must be built for the SAME OS/arch as that container (Linux). On a Linux host of that
+arch a plain `cargo build --release` already matches. On a non-Linux dev host (e.g. macOS) a locally-built `.dylib` will not load
 inside a Linux container; verify natively instead — build `busbar` and the plugin for
 the host, pack an unsigned tarball, point `plugins.dir` at it with
 `plugins.trust.allow_unsigned: true`, and run `busbar --validate` / a native request
@@ -59,7 +58,8 @@ without Docker.
   hook's whole-path cost (gate call + compression, now an in-process `busbar_call`
   rather than a socket round-trip).
 - **Deterministic input.** [`corpus.py`](corpus.py) generates byte-identical noisy
-  tool-log history at `target_ratio: 0.5`, so two runs produce the same inputs.
+  tool-log history, so two runs produce the same inputs (the hook phase compresses it at
+  `config.hook.yaml`'s `target_ratio: 0.5`).
 
 ## Honesty notes
 
@@ -67,14 +67,14 @@ without Docker.
   Docker VM) it reads high; on a real multi-core host it approaches busbar's native
   tens-of-µs. **Report the host's core count with any absolute number**, or lean on
   the delta, which is far more stable across hosts.
-- Savings are content- and setting-dependent: the corpus is compressible tool logs /
-  RAG dumps. Ordinary conversation isn't compressible and the hook abstains on it.
+- Savings are content- and setting-dependent: the corpus is compressible tool logs
+  (the only flavor `corpus.py` generates). Ordinary conversation isn't compressible and the hook abstains on it.
 
 ## Smoke test
 
 [`../scripts/docker-smoke.sh`](../scripts/docker-smoke.sh) is the release-gate check:
-it builds and packs the plugin from this checkout, boots a single `getbusbar/busbar`
-container with it dlopen'd, runs `busbar --validate` to prove a clean plugin load, and
+it builds and packs the plugin from this checkout, boots a single busbar container (a
+dynamically linked image at `.busbar-ref`) with it dlopen'd, runs `busbar --validate` to prove a clean plugin load, and
 sends a compressible request to assert it ships fewer tokens upstream — the check that
 would have caught a plugin that builds but fails the signed-manifest / ABI checks at
 load, or dlopens but doesn't actually rewrite.

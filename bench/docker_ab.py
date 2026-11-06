@@ -6,27 +6,26 @@
 # runs it. It measures the hook's added cost on busbar's OWN clock (`busbar;dur`), so the
 # harness/network floor cancels in the with/without-hook delta.
 #
-# Topology (1.5.0 signed dlopen plugin ABI — NOT the retired socket/webhook hook transports):
+# Topology (busbar's signed dlopen plugin ABI, v2 at the busbar rev in .busbar-ref):
 #   * mock upstream — a recording OpenAI-shaped mock on 127.0.0.1:9001; tallies the chars that
 #     actually ARRIVED upstream, proving the rewrite shipped rather than being hook-side accounting.
-#   * busbar — ONE container, the getbusbar/busbar image, sharing the mock container's NETWORK
+#   * busbar — ONE container, the dynamically linked busbar image named by BUSBAR_IMAGE (the
+#     static, plugin-free getbusbar/busbar image cannot dlopen the hook), sharing the mock container's NETWORK
 #     NAMESPACE so the mock is reachable at 127.0.0.1 (busbar's plaintext-loopback carve-out, same
 #     as a local-model deployment). Its :8080 is published through the mock container.
 #
-# There is no second "headroom-hook" container and no shared Unix-socket volume: a `kind: hook`
-# plugin loads IN-PROCESS (dlopen) inside the one busbar container. The hook phase differs from the
-# baseline phase ONLY in which config.yaml is mounted (config.hook.yaml adds `plugins:` +
-# `global_hooks:`) and in a `plugins/` directory bind-mounted at /etc/busbar/plugins containing the
-# Headroom plugin tarball — see `prep_plugin()` below.
+# A `kind: hook` plugin loads IN-PROCESS (dlopen) inside the one busbar container. The hook phase
+# differs from the baseline phase ONLY in which config.yaml is mounted (config.hook.yaml adds
+# `plugins:`, the `hooks:` definition and the `pools.hooks` attach) and in a `plugins/` directory
+# bind-mounted at /etc/busbar/plugins containing the Headroom plugin tarball — see `prep_plugin()`.
 #
 # The plugin tarball is built and packed from THIS checkout (not pulled from a release), so the
 # bench always measures the current source tree: `cargo build --release` here, then
 # `busbar-plugin-pack pack --allow-unsigned` (the busbar-plugin-pack binary is built from the
 # busbar checkout — see BUSBAR_DIR below). Both busbar and the plugin must target the SAME OS/
-# arch as the container (Linux); on a GitHub Actions Linux runner the host IS that arch, so a plain
-# `cargo build --release` is correct. On a non-Linux dev host (e.g. macOS), skip Docker and run
-# `../scripts/local_verify.sh`-style native verification instead — a locally-built .dylib cannot
-# dlopen inside a Linux container.
+# arch as the container (Linux); on a Linux host of that arch a plain `cargo build --release` is
+# correct. A non-Linux dev host (e.g. macOS) cannot run this harness: a locally-built .dylib
+# cannot dlopen inside a Linux container.
 #
 #   BUSBAR_IMAGE=<compatible-image> python3 docker_ab.py --requests 1000 --concurrency 1 --history-kb 11
 #
@@ -52,18 +51,25 @@ BUSBAR_IMAGE = os.environ.get("BUSBAR_IMAGE")
 MOCK = "hb-mock"
 BUSBAR = "hb-busbar"
 # INTERNAL ports (inside the shared netns — fixed, never collide): busbar listens on
-# 8080 (see config*.yaml), the mock on 9001 (providers.yaml points busbar there).
+# 8080 (see config*.yaml), the mock on 9001 (providers.mock.yaml points busbar there).
 PORT = 8080
 MOCK_PORT = 9001
 # The only HOST-published port; override on a busy host with BENCH_PORT. The driver
 # and healthz poll this; the mock's /stats,/reset are reached in-container via docker exec.
 HOST_PORT = int(os.environ.get("BENCH_PORT", "8080"))
+MOCK_READY_TRIES = 30  # x 0.5 s
 PLUGIN_DIR = os.path.join(HERE, "plugins")  # bind-mounted read-only at /etc/busbar/plugins
 
 
 def sh(*args, check=True, quiet=True, cwd=None):
-    kw = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL} if quiet else {}
-    return subprocess.run(args, check=check, cwd=cwd, **kw)
+    """Run a command. A quiet one hides its output unless it fails, then shows its stderr."""
+    if not quiet:
+        return subprocess.run(args, check=check, cwd=cwd)
+    done = subprocess.run(args, cwd=cwd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    if check and done.returncode != 0:
+        sys.stderr.write(done.stderr)
+        done.check_returncode()
+    return done
 
 
 def rm(*names):
@@ -118,11 +124,13 @@ def mock_get(path):
         f"r=u.urlopen(u.Request('http://127.0.0.1:{MOCK_PORT}{path}',method='{method}'));"
         "sys.stdout.write(r.read().decode())"
     )
-    out = subprocess.run(
+    done = subprocess.run(
         ["docker", "exec", MOCK, "python", "-c", code],
-        capture_output=True, text=True, check=True,
-    ).stdout
-    return json.loads(out) if out.strip() else {}
+        capture_output=True, text=True,
+    )
+    if done.returncode != 0:
+        raise RuntimeError(f"mock upstream {path} failed: {done.stderr.strip()}")
+    return json.loads(done.stdout) if done.stdout.strip() else {}
 
 
 def load(body, n, conc, warmup):
@@ -139,9 +147,10 @@ def load(body, n, conc, warmup):
                 conn.request("POST", "/v1/chat/completions", body=body, headers=hdrs)
                 r = conn.getresponse()
                 st = r.getheader("Server-Timing")
-                r.read()
+                payload = r.read()
                 if not 200 <= r.status < 300:
-                    raise RuntimeError(f"benchmark request returned HTTP {r.status}")
+                    detail = payload[:500].decode("utf-8", "replace")
+                    raise RuntimeError(f"benchmark request returned HTTP {r.status}: {detail}")
                 d = busbar_dur_us(st)
                 if d is None:
                     raise RuntimeError("benchmark response has no valid busbar Server-Timing")
@@ -170,18 +179,36 @@ def start_mock(delay_ms):
        "-v", f"{HERE}/mock_upstream.py:/mock.py:ro",
        "python:3.12-slim", "python", "/mock.py", "--port", str(MOCK_PORT),
        "--delay-ms", str(delay_ms))
-    time.sleep(2)
+    # Poll the mock until it answers rather than assuming a fixed start-up time.
+    for _ in range(MOCK_READY_TRIES):
+        try:
+            mock_get("/stats")
+            return
+        except RuntimeError as error:
+            last = error
+            time.sleep(0.5)
+    raise RuntimeError(f"the mock upstream never answered /stats: {last}")
 
 
 def busbar_dir():
     """Locate the pinned busbar source checkout used to build the packer."""
-    supplied = os.environ.get("BUSBAR_DIR") or os.environ.get("BUSBARAI_DIR")
+    supplied = os.environ.get("BUSBAR_DIR")
     candidate = supplied or os.path.join(os.path.dirname(REPO), "busbar")
     candidate = os.path.abspath(candidate)
     manifest = os.path.join(candidate, "crates", "plugin-loader", "Cargo.toml")
     if not os.path.isfile(manifest):
         sys.exit("set BUSBAR_DIR to a busbar checkout containing crates/plugin-loader")
     return candidate
+
+
+def package_version(manifest):
+    """The package version from Cargo.toml text; a manifest without one stops the pack rather
+    than labelling the tarball with a made-up version."""
+    # cheap TOML scrape (avoids a tomllib dep / import ordering fuss): version = "x.y.z"
+    found = re.search(r'(?m)^version\s*=\s*"([^"]+)"', manifest)
+    if not found:
+        sys.exit("Cargo.toml has no package version to stamp into the plugin tarball")
+    return found.group(1)
 
 
 def prep_plugin():
@@ -208,9 +235,8 @@ def prep_plugin():
     if not os.path.exists(pack):
         sys.exit(f"busbar-plugin-pack binary not found at {pack}")
 
-    # cheap TOML scrape (avoids a tomllib dep / import ordering fuss): version = "x.y.z"
-    ver_m = re.search(r'(?m)^version\s*=\s*"([^"]+)"', open(os.path.join(REPO, "Cargo.toml")).read())
-    version = ver_m.group(1) if ver_m else "0.0.0"
+    with open(os.path.join(REPO, "Cargo.toml")) as manifest:
+        version = package_version(manifest.read())
 
     shutil.rmtree(PLUGIN_DIR, ignore_errors=True)
     os.makedirs(PLUGIN_DIR, exist_ok=True)
@@ -220,6 +246,7 @@ def prep_plugin():
        "--name", "busbar-hook-headroom", "--alias", "headroom", "--kind", "hook",
        "--version", version, "--publisher", "busbar", "--license", "Apache-2.0",
        "--needs-prompt", "rw", "--allow-unsigned",
+       "--declares-file", os.path.join(REPO, "declares.json"),
        "--out", out,
        quiet=False)
     if not os.path.exists(out):
@@ -230,12 +257,12 @@ def prep_plugin():
 def start_busbar(config, with_hook):
     rm(BUSBAR)
     args = ["docker", "run", "-d", "--name", BUSBAR, "--network", f"container:{MOCK}",
-            "-e", "BENCH_MOCK_KEY=x", "-e", "BUSBAR_STATE_FILE=",
+            "-e", "BENCH_MOCK_KEY=x",
             "-v", f"{HERE}/{config}:/etc/busbar/config.yaml:ro",
             "-v", f"{HERE}/providers.mock.yaml:/etc/busbar/providers.yaml:ro"]
     if with_hook:
         # The whole hook phase, vs. baseline, is: this one extra mount + config.hook.yaml's
-        # `plugins:`/`global_hooks:` blocks. No second container, no socket volume.
+        # `plugins:`/`hooks:`/`pools.hooks` blocks.
         args += ["-v", f"{PLUGIN_DIR}:/etc/busbar/plugins:ro"]
     args += [BUSBAR_IMAGE]
     sh(*args)
@@ -251,7 +278,9 @@ def measure(config, with_hook, args):
     mock_get("/reset")
     durs = load(body, args.requests, args.concurrency, args.warmup)
     stats = mock_get("/stats")
-    tokens = round(stats.get("prompt_tokens_est", 0) / max(1, stats.get("requests", 1)))
+    if not stats.get("requests"):
+        raise RuntimeError(f"{config}: no request reached the mock upstream, so there is no token count")
+    tokens = round(stats.get("prompt_tokens_est", 0) / stats["requests"])
     return {
         "busbar_dur_us": {q: percentile(durs, p) for q, p in (("p50", .5), ("p90", .9), ("p99", .99))},
         "samples": len(durs),
@@ -295,7 +324,9 @@ def main():
     result = {
         "config": vars(args),
         "images": {"busbar": BUSBAR_IMAGE},
-        "plugin": "built from this checkout, packed unsigned (dev mode)",
+        "plugin": ("reused plugins/busbar-hook-headroom.tar.gz (--skip-plugin-build)"
+                   if args.skip_plugin_build
+                   else "built from this checkout, packed unsigned (dev mode)"),
         "baseline": base, "hook": hook,
         "added_busbar_dur_us": delta,
         "tokens": {"baseline": base["tokens_per_req"], "hook": hook["tokens_per_req"],

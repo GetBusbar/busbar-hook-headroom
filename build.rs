@@ -1,13 +1,14 @@
-// Stamp the headroom-core version this hook is BUILT AGAINST into the binary, so `headroom-hook`
-// reports both its own version and the headroom-core git ref (tag when pinned to a release, else a
-// short commit) it was compiled with. Sourced from Cargo.lock, so it always matches the actual build.
+// Stamp the headroom-core version this plugin is BUILT AGAINST into the cdylib, so `status` reports
+// the headroom-core git ref (tag when pinned to a release, else a short commit) it was compiled
+// with. Sourced from Cargo.lock, so it always matches the actual build.
 use std::fs;
 
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.lock");
     // A read or parse failure stamps "unknown" rather than failing the build, because a source
     // tree without a Cargo.lock is a legitimate way to build. But it is WARNED about: this value is
-    // reported through `status.headroom_core_ref` as build provenance, and an operator auditing
+    // reported through `status.headroom_core_ref` as build provenance (busbar 1.6.0 does not surface
+    // that member yet), and an operator auditing
     // which engine version is deployed cannot otherwise tell "genuinely unpinned" from "the build
     // could not read its own lockfile".
     let r = fs::read_to_string("Cargo.lock")

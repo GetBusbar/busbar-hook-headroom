@@ -85,7 +85,7 @@
   "panels": [
     {
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "description": "Input tokens saved by compression since the process started.",
+      "description": "Input tokens saved by compression since the plugin instance started (busbar reopens it on a config reload or settings PATCH).",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },

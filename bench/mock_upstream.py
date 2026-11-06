@@ -7,8 +7,7 @@
 #
 # Serves POST /v1/chat/completions (OpenAI-shaped, non-streaming; busbar's OpenAI writer appends
 # this path to base_url). Every request's message content chars are tallied; the reply's
-# usage.prompt_tokens is ceil(chars/4) — the same estimator the direct driver uses, so the token
-# numbers line up across the rig.
+# usage.prompt_tokens is ceil(chars/4), the standard ~4-chars-per-token estimate.
 #
 #   GET  /stats -> {"requests": N, "prompt_chars": C, "prompt_tokens_est": T}
 #   POST /reset -> zeroes the tally (called between the baseline and hook phases)
@@ -65,12 +64,24 @@ class Handler(BaseHTTPRequestHandler):
                     _stats[k] = 0
             self._reply(200, b"{}")
             return
+        # A body that is not a readable chat request is refused, never booked as a tiny prompt:
+        # the smoke gate would read a near-zero token tally as "the compression reached the
+        # provider", turning a broken request path into a PASS.
         try:
             body = json.loads(raw)
         except ValueError:
-            body = {}
+            body = None
+        messages = body.get("messages") if isinstance(body, dict) else None
+        if not isinstance(messages, list) or not all(isinstance(m, dict) for m in messages):
+            self._reply(400, b'{"error": "not a chat completions request"}')
+            return
         chars = _content_chars(body)
-        tokens = max(1, math.ceil(chars / 4))
+        if chars == 0:
+            # No readable `content` at all (an empty array, or projection-form `text`): the same
+            # "cannot read it" case, not a perfectly compressed prompt.
+            self._reply(400, b'{"error": "chat completions request carries no content"}')
+            return
+        tokens = math.ceil(chars / 4)
         with _lock:
             _stats["requests"] += 1
             _stats["prompt_chars"] += chars

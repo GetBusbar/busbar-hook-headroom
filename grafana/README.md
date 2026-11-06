@@ -12,9 +12,9 @@ dashboard covers both:
 | Source | Endpoint | Notes |
 |---|---|---|
 | Headroom proxy | `GET /metrics` | Headroom's own Prometheus exposition. |
-| Busbar | `GET /metrics/hooks` | Busbar scrapes this hook and re-exposes the same `headroom_*` names, adding a `hook="headroom"` label and a per-`pool` label. |
+| Busbar | `GET /metrics/hooks` | Busbar scrapes this hook and re-exposes the same `headroom_*` names, adding a `hook="<instance>"` label (the hook instance name from your config: `headroom` in the README examples, `busbar-headroom` in the bundled image and `config.example.yaml`) and a per-`pool` label. |
 
-The `Pool` and `Hook` template variables use regex matchers (`=~`), so they also match
+The `Pool` and `Source` (the `hook` label) template variables use regex matchers (`=~`), so they also match
 Headroom-native series that carry no such label — the dashboard is identical whether you
 point Prometheus at Headroom or at Busbar.
 

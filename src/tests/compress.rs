@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `compress` (kept out of the core file so it reads lean). Ported from the old
-//! Unix-socket hook's `src/tests/compress.rs`, adapted from `handle_line(&bytes, &knobs, &metrics)`
-//! to the new plugin's pure `run_transform(&payload, &knobs, &metrics)` call surface — building the
-//! `transform` payload shape directly (`{"request": {"pool", "messages": [{"role","text"}, ...]}}`)
-//! instead of a whole socket-wire line.
+//! Tests for `compress`, driving the pure `run_transform(&payload, &knobs, &metrics)` call surface
+//! with the `transform` payload shape built directly (`{"request": {"pool", "messages": [...]}}`).
 
 use super::*;
 
@@ -36,8 +33,7 @@ fn log_dump(lines: usize) -> String {
 }
 
 /// Build the `transform` payload the engine's `hooks::wire` projects: `{"request": {"pool",
-/// "messages": [{"role","text"}, ...]}}` — the same shape the old socket wire's `HookLine{request}`
-/// read (minus the `candidates`/`context` envelope we never used).
+/// "messages": [{"role","text"}, ...]}}`.
 fn transform_payload(messages: Vec<(&str, String)>) -> Value {
     let msgs: Vec<Value> = messages
         .iter()
@@ -178,6 +174,70 @@ fn a_system_turn_is_never_compressed() {
     assert!(msgs[1]["content"].as_str().unwrap().len() < log_dump(40).len());
 }
 
+/// OpenAI's `developer` role carries the operator's instructions exactly as `system` does (it
+/// replaces `system` for the newer models), and busbar projects it with its role intact, so it
+/// must be kept verbatim on the same terms as a system turn.
+#[test]
+fn a_developer_turn_is_never_compressed() {
+    let developer = format!("DEVELOPER_RULES {}", log_dump(40));
+    let payload = transform_payload(vec![
+        ("developer", developer.clone()),
+        ("user", log_dump(40)),
+        ("user", "why did the deployment fail".to_string()),
+    ]);
+    let knobs = locked(Knobs {
+        target_ratio: 0.4,
+        min_savings_pct: 1.0,
+        ..Knobs::default()
+    });
+    let reply = transform(&payload, &knobs);
+    let msgs = reply["rewrite"]["messages"]
+        .as_array()
+        .expect("rewrite arm");
+    assert_eq!(msgs[0]["role"], "developer");
+    assert_eq!(
+        msgs[0]["content"].as_str().unwrap(),
+        developer,
+        "the developer turn must survive byte-for-byte"
+    );
+    assert!(msgs[1]["content"].as_str().unwrap().len() < log_dump(40).len());
+}
+
+/// A tool-result turn carries structure the text-only projection cannot show (`tool_call_id`, and
+/// the preceding assistant turn's `tool_calls`), and busbar replaces the request's whole messages
+/// array with the rewrite. Committing would ship `{"role":"tool","content":...}` with no
+/// `tool_call_id` and an assistant turn with no `tool_calls`, which the provider rejects. Such a
+/// prompt must abstain (and still be counted), however compressible its text is.
+#[test]
+fn a_prompt_with_a_tool_turn_abstains_and_is_counted() {
+    for role in ["tool", "function", "Tool"] {
+        let payload = transform_payload(vec![
+            ("user", log_dump(40)),
+            ("assistant", "{\"q\":\"deploy logs\"}".to_string()),
+            (role, log_dump(40)),
+            ("user", "why did the deployment fail".to_string()),
+        ]);
+        let knobs = locked(Knobs {
+            target_ratio: 0.4,
+            min_savings_pct: 1.0,
+            ..Knobs::default()
+        });
+        let metrics = Mutex::new(Metrics::default());
+        let reply = run_transform(&payload, &knobs, &metrics);
+        assert_eq!(
+            reply,
+            json!({}),
+            "a `{role}` turn must make the gate abstain"
+        );
+        let m = metrics.lock().unwrap();
+        assert_eq!(
+            m.pools["p"].requests_seen, 1,
+            "the abstain is still counted"
+        );
+        assert_eq!(m.pools["p"].chars_in, 0, "nothing is booked as saved");
+    }
+}
+
 /// A rewrite must never be committed unless it actually made the prompt shorter. `min_savings_pct`
 /// is settable to 0, and the percentage is clamped at zero, so at a zero bar both "compressed
 /// nothing" and "made it longer" used to satisfy the gate and commit a rewrite that achieved
@@ -224,9 +284,8 @@ fn ask_message_is_never_compressed_even_when_compressible() {
     );
 }
 
-/// Every message empty (`chars_before == 0`) must always abstain, even at the most permissive
-/// `min_savings_pct: 0.0` bar — there is nothing to have "saved" from zero input chars, so
-/// `committed` must gate on `chars_before > 0`, not merely on clearing the savings percentage.
+/// Every message empty must always abstain, even at the most permissive `min_savings_pct: 0.0`
+/// bar: an empty turn is a text-less turn, which is never rewritten.
 #[test]
 fn all_empty_messages_never_commit_even_at_zero_savings_bar() {
     let payload = transform_payload(vec![("user", String::new()), ("user", String::new())]);
@@ -381,11 +440,14 @@ fn status_reports_headroom_named_metrics() {
         ["value"]
         .as_u64()
         .unwrap();
-    assert!(input_total > 0, "chars_seen must actually accumulate");
+    assert!(input_total > 0, "chars_sent must actually accumulate");
+    // Input is what was SENT (post-compression), so sent + saved is what arrived: the original
+    // prompt's size, give or take the per-term rounding of `est_tokens`.
+    let arrived = est_tokens((2 * log_dump(40).len() + "why did the deployment fail".len()) as u64);
+    let sent_plus_saved = input_total + saved["value"].as_u64().unwrap();
     assert!(
-        saved["value"].as_u64().unwrap() < input_total,
-        "tokens saved must be a genuine fraction of the input, not the whole input (chars_out \
-         must actually be subtracted, not stuck at zero): saved={} input={input_total}",
+        sent_plus_saved.abs_diff(arrived) <= 1,
+        "sent ({input_total}) + saved ({}) must account for the {arrived} tokens that arrived",
         saved["value"]
     );
     assert!(
@@ -726,4 +788,395 @@ fn single_message_and_empty_history_are_counted_without_rewriting() {
     assert_eq!(value("headroom_tokens_input_total"), 2);
     assert_eq!(value("headroom_tokens_saved_total"), 0);
     assert_eq!(value("headroom_overhead_ms_count"), 2);
+}
+
+/// The overhead min/max gauges fold every sample, not just the first: after a near-instant
+/// abstain and a multi-KB compress on the same pool, min is strictly below max and the sum sits
+/// between `count * min` and `count * max`. A swapped `min`/`max` fold collapses min onto max.
+#[test]
+fn overhead_min_and_max_track_the_fastest_and_slowest_samples() {
+    let knobs = locked(Knobs::default());
+    let metrics = Mutex::new(Metrics::default());
+    let tiny = pool_payload("p", vec![("user", "hi".to_string())]);
+    let big = pool_payload(
+        "p",
+        vec![
+            ("user", log_dump(120)),
+            ("assistant", log_dump(120)),
+            ("user", "why did the deployment fail".to_string()),
+        ],
+    );
+    run_transform(&tiny, &knobs, &metrics);
+    run_transform(&big, &knobs, &metrics);
+    run_transform(&tiny, &knobs, &metrics);
+    let m = metrics.lock().unwrap();
+    let s = &m.pools["p"];
+    assert_eq!(s.overhead_us_count, 3);
+    assert!(
+        s.overhead_us_min < s.overhead_us_max,
+        "min {} must be below max {}",
+        s.overhead_us_min,
+        s.overhead_us_max
+    );
+    assert!(u128::from(s.overhead_us_min) * 3 <= s.overhead_us_sum);
+    assert!(s.overhead_us_sum <= u128::from(s.overhead_us_max) * 3);
+}
+
+/// `dollars_saved` is priced off the CONFIGURED `price_udollars_per_ktok`, with the ±15% interval
+/// around it, not off the default price.
+#[test]
+fn dollars_saved_follows_the_configured_price() {
+    let knobs = locked(Knobs {
+        target_ratio: 0.4,
+        min_savings_pct: 1.0,
+        price_udollars_per_ktok: 4000.0,
+        ..Knobs::default()
+    });
+    let metrics = Mutex::new(Metrics::default());
+    let payload = transform_payload(vec![
+        ("user", log_dump(40)),
+        ("user", "why did the deployment fail".to_string()),
+    ]);
+    assert!(
+        run_transform(&payload, &knobs, &metrics)
+            .get("rewrite")
+            .is_some()
+    );
+    let status = build_status(&knobs, &metrics);
+    let m = status["status"]["metrics"].as_array().unwrap();
+    let find = |name: &str| m.iter().find(|e| e["name"] == name).unwrap().clone();
+    let saved = find("headroom_tokens_saved_total")["value"]
+        .as_u64()
+        .unwrap();
+    assert!(saved > 0);
+    let dollars = find("dollars_saved");
+    let want = saved as f64 * 4000.0 / 1000.0 / 1_000_000.0;
+    assert_eq!(dollars["value"].as_f64().unwrap(), want);
+    assert_eq!(dollars["ci_low"].as_f64().unwrap(), want * 0.85);
+    assert_eq!(dollars["ci_high"].as_f64().unwrap(), want * 1.15);
+}
+
+/// Instruction roles are matched case-insensitively: `SYSTEM` and `Developer` are kept verbatim.
+#[test]
+fn instruction_roles_are_matched_case_insensitively() {
+    for role in ["SYSTEM", "System", "Developer", "DEVELOPER"] {
+        let rules = format!("RULES {}", log_dump(40));
+        let payload = transform_payload(vec![
+            (role, rules.clone()),
+            ("user", log_dump(40)),
+            ("user", "why did the deployment fail".to_string()),
+        ]);
+        let knobs = locked(Knobs {
+            target_ratio: 0.4,
+            min_savings_pct: 1.0,
+            ..Knobs::default()
+        });
+        let reply = transform(&payload, &knobs);
+        assert_eq!(
+            reply["rewrite"]["messages"][0]["content"].as_str(),
+            Some(rules.as_str()),
+            "a `{role}` turn must survive byte-for-byte"
+        );
+    }
+}
+
+/// A payload without `request.pool` is folded into the `unknown` bucket, not dropped.
+#[test]
+fn a_missing_pool_is_counted_under_unknown() {
+    let knobs = locked(Knobs::default());
+    let metrics = Mutex::new(Metrics::default());
+    let payload = json!({"request": {"messages": [{"role": "user", "text": "hi"}]}});
+    assert_eq!(run_transform(&payload, &knobs, &metrics), json!({}));
+    let m = metrics.lock().unwrap();
+    assert_eq!(m.pools.len(), 1);
+    assert_eq!(m.pools["unknown"].requests_seen, 1);
+    assert_eq!(m.pools["unknown"].chars_sent, 2);
+}
+
+/// The savings bar is inclusive: savings exactly equal to `min_savings_pct` commit.
+#[test]
+fn savings_exactly_at_the_bar_commit() {
+    let payload = transform_payload(vec![
+        ("user", log_dump(40)),
+        ("user", "why did the deployment fail".to_string()),
+    ]);
+    let probe = transform(
+        &payload,
+        &locked(Knobs {
+            min_savings_pct: 0.0,
+            ..Knobs::default()
+        }),
+    );
+    let msgs = probe["rewrite"]["messages"]
+        .as_array()
+        .expect("rewrite arm");
+    let after: usize = msgs
+        .iter()
+        .map(|m| m["content"].as_str().unwrap().len())
+        .sum();
+    let before = log_dump(40).len() + "why did the deployment fail".len();
+    assert!(after < before);
+    let pct = 100.0 * (before - after) as f64 / before as f64;
+    let at_bar = transform(
+        &payload,
+        &locked(Knobs {
+            min_savings_pct: pct,
+            ..Knobs::default()
+        }),
+    );
+    assert_eq!(at_bar, probe, "savings equal to the bar must commit");
+}
+
+/// A projection with the operator's system prompt hoisted into `request.system` (busbar 1.6.0
+/// hoists every in-band system/developer turn there) and a compressible history.
+fn payload_with_system(protocol: Option<&str>, system: &str) -> Value {
+    let mut request = json!({
+        "pool": "p",
+        "system": system,
+        "messages": [
+            {"role": "user", "text": log_dump(40)},
+            {"role": "assistant", "text": log_dump(40)},
+            {"role": "user", "text": "why did the deployment fail"}
+        ]
+    });
+    if let Some(protocol) = protocol {
+        request["ingress_protocol"] = json!(protocol);
+    }
+    json!({ "request": request })
+}
+
+/// On dialects that carry the system prompt inside the turns array, busbar hoists it into
+/// `request.system` and then REPLACES the whole array with the rewrite, so a commit would ship the
+/// request without its system prompt. The gate must abstain there (and still count the request).
+#[test]
+fn a_hoisted_system_prompt_on_an_in_band_dialect_abstains() {
+    let knobs = locked(Knobs {
+        target_ratio: 0.4,
+        min_savings_pct: 1.0,
+        ..Knobs::default()
+    });
+    for protocol in [
+        Some("openai"),
+        Some("responses"),
+        Some("cohere"),
+        Some("a-new-dialect"),
+        None,
+    ] {
+        let metrics = Mutex::new(Metrics::default());
+        let reply = run_transform(
+            &payload_with_system(protocol, "You are a billing bot."),
+            &knobs,
+            &metrics,
+        );
+        assert_eq!(
+            reply,
+            json!({}),
+            "{protocol:?} must abstain rather than drop the system prompt"
+        );
+        assert_eq!(metrics.lock().unwrap().pools["p"].requests_seen, 1);
+    }
+}
+
+/// Where the system prompt lives in its own body field (anthropic `system`, bedrock `system`,
+/// gemini `systemInstruction`) the rewrite never touches it, so compression proceeds.
+#[test]
+fn a_system_prompt_in_its_own_body_field_still_compresses() {
+    let knobs = locked(Knobs {
+        target_ratio: 0.4,
+        min_savings_pct: 1.0,
+        ..Knobs::default()
+    });
+    for protocol in ["anthropic", "bedrock", "gemini"] {
+        let reply = transform(
+            &payload_with_system(Some(protocol), "You are a billing bot."),
+            &knobs,
+        );
+        assert!(
+            reply.get("rewrite").is_some(),
+            "{protocol} keeps its system prompt out of the rewrite"
+        );
+    }
+    // An empty system prompt is not a system prompt (busbar omits it), on any dialect.
+    let reply = transform(&payload_with_system(Some("openai"), ""), &knobs);
+    assert!(reply.get("rewrite").is_some());
+}
+
+/// The ask is the last turn only when it is a user turn. With an assistant prefill (or a trailing
+/// instruction turn) last, compressing would shred the user's real question against the prefill,
+/// so the gate abstains and still counts the request.
+#[test]
+fn a_prompt_that_does_not_end_on_a_user_turn_abstains() {
+    let knobs = locked(Knobs {
+        target_ratio: 0.4,
+        min_savings_pct: 1.0,
+        ..Knobs::default()
+    });
+    for last in ["assistant", "system", "developer"] {
+        let metrics = Mutex::new(Metrics::default());
+        let payload = transform_payload(vec![
+            ("user", log_dump(40)),
+            (last, "Here is the JSON:".to_string()),
+        ]);
+        assert_eq!(
+            run_transform(&payload, &knobs, &metrics),
+            json!({}),
+            "last turn `{last}`"
+        );
+        assert_eq!(metrics.lock().unwrap().pools["p"].requests_seen, 1);
+    }
+}
+
+/// busbar projects an image-only (or otherwise text-less) turn as empty text. A committed rewrite
+/// would ship it as `{"content": ""}`, which Anthropic and Bedrock reject outright, turning a request
+/// that would have succeeded into a provider error. Such a prompt abstains (and is counted).
+#[test]
+fn a_prompt_with_a_text_less_turn_abstains() {
+    let knobs = locked(Knobs {
+        target_ratio: 0.4,
+        min_savings_pct: 1.0,
+        ..Knobs::default()
+    });
+    for (empty_at, blank) in [(2usize, ""), (1, ""), (2, "  \n ")] {
+        let mut turns = vec![
+            ("user", log_dump(40)),
+            ("assistant", log_dump(40)),
+            ("user", "why did the deployment fail".to_string()),
+        ];
+        turns[empty_at].1 = blank.to_string();
+        let metrics = Mutex::new(Metrics::default());
+        let reply = run_transform(&transform_payload(turns), &knobs, &metrics);
+        assert_eq!(
+            reply,
+            json!({}),
+            "a text-less turn at {empty_at} must abstain"
+        );
+        assert_eq!(metrics.lock().unwrap().pools["p"].requests_seen, 1);
+    }
+}
+
+/// `min_savings_pct` is a share of the WHOLE prompt. On a dialect whose system prompt survives the
+/// rewrite in its own field, that system prompt is part of what ships, so it counts in the
+/// denominator: a small history behind a large system prompt must not clear a 10% bar.
+#[test]
+fn the_savings_bar_counts_a_system_prompt_that_ships_unchanged() {
+    let knobs = locked(Knobs {
+        target_ratio: 0.4,
+        min_savings_pct: 10.0,
+        ..Knobs::default()
+    });
+    let big_system = "Operator rules. ".repeat(4_000); // ~64 KB vs ~10 KB of history
+    let reply = transform(&payload_with_system(Some("anthropic"), &big_system), &knobs);
+    assert_eq!(
+        reply,
+        json!({}),
+        "a few percent of the whole prompt must not clear a 10% bar"
+    );
+    // The same history without the system prompt does clear it.
+    let reply = transform(&payload_with_system(Some("anthropic"), ""), &knobs);
+    assert!(reply.get("rewrite").is_some());
+}
+
+/// `headroom_tokens_input_total` follows Headroom's definition: input tokens actually sent upstream,
+/// i.e. AFTER a committed rewrite, so `saved / (input + saved)` is the real reduction.
+#[test]
+fn input_tokens_count_what_was_sent_upstream() {
+    let knobs = locked(Knobs {
+        target_ratio: 0.4,
+        min_savings_pct: 1.0,
+        ..Knobs::default()
+    });
+    let metrics = Mutex::new(Metrics::default());
+    let payload = transform_payload(vec![
+        ("user", log_dump(40)),
+        ("user", "why did the deployment fail".to_string()),
+    ]);
+    let reply = run_transform(&payload, &knobs, &metrics);
+    let sent: usize = reply["rewrite"]["messages"]
+        .as_array()
+        .expect("committed")
+        .iter()
+        .map(|m| m["content"].as_str().unwrap().len())
+        .sum();
+    // An abstaining request ships unchanged, so all of it counts.
+    let small = transform_payload(vec![("user", "hi".to_string())]);
+    assert_eq!(run_transform(&small, &knobs, &metrics), json!({}));
+    let status = build_status(&knobs, &metrics);
+    let input = status["status"]["metrics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == "headroom_tokens_input_total")
+        .unwrap()["value"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(input, est_tokens((sent + 2) as u64));
+}
+
+/// Over `limits.hook_content_max_bytes` busbar shows the hook an EMPTY projection but keeps the real
+/// size in `request.total_chars`. That prompt still went upstream whole, so it counts as sent input.
+#[test]
+fn a_prompt_omitted_by_the_content_cap_counts_its_real_size() {
+    let knobs = locked(Knobs::default());
+    let metrics = Mutex::new(Metrics::default());
+    let payload = json!({"request": {"pool": "p", "total_chars": 4_000_000, "messages": []}});
+    assert_eq!(run_transform(&payload, &knobs, &metrics), json!({}));
+    let m = metrics.lock().unwrap();
+    assert_eq!(m.pools["p"].requests_seen, 1);
+    assert_eq!(m.pools["p"].chars_sent, 4_000_000);
+}
+
+/// The ask is the BM25 query: the history segment that matches it survives a deep cut, while the
+/// same history compressed against a different ask loses it.
+#[test]
+fn the_last_message_steers_what_the_history_keeps() {
+    let mut history = String::new();
+    for i in 0..40 {
+        if i == 7 {
+            history.push_str("The zebra cache was rebuilt from the cold snapshot overnight.\n");
+        } else {
+            history.push_str(&format!(
+                "Routine step {i} completed in the staging environment without incident.\n"
+            ));
+        }
+    }
+    let knobs = locked(Knobs {
+        target_ratio: 0.2,
+        min_savings_pct: 1.0,
+        ..Knobs::default()
+    });
+    let kept = |ask: &str| {
+        let reply = transform(
+            &transform_payload(vec![("user", history.clone()), ("user", ask.to_string())]),
+            &knobs,
+        );
+        reply["rewrite"]["messages"][0]["content"]
+            .as_str()
+            .expect("rewrite arm")
+            .to_string()
+    };
+    assert!(kept("what happened to the zebra cache snapshot").contains("zebra cache"));
+    assert!(!kept("which staging step ran last").contains("zebra cache"));
+}
+
+/// The emitted `headroom_overhead_ms_*` series carry the pool's own min / max / sum / count, each
+/// folded from microseconds to milliseconds, so a mixed-up field or a missed unit fold shows here.
+#[test]
+fn status_emits_each_overhead_series_from_its_own_field() {
+    let knobs = locked(Knobs::default());
+    let metrics = Mutex::new(Metrics::default());
+    {
+        let mut m = metrics.lock().unwrap();
+        let s = m.pools.entry("p".to_string()).or_default();
+        s.overhead_us_sum = 7_500;
+        s.overhead_us_count = 3;
+        s.overhead_us_min = 500;
+        s.overhead_us_max = 6_000;
+    }
+    let status = build_status(&knobs, &metrics);
+    let series = status["status"]["metrics"].as_array().unwrap();
+    let value = |name: &str| series.iter().find(|e| e["name"] == name).unwrap()["value"].clone();
+    assert_eq!(value("headroom_overhead_ms_sum"), json!(7.5));
+    assert_eq!(value("headroom_overhead_ms_count"), json!(3));
+    assert_eq!(value("headroom_overhead_ms_min"), json!(0.5));
+    assert_eq!(value("headroom_overhead_ms_max"), json!(6.0));
 }

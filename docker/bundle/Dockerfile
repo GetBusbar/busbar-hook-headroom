@@ -8,16 +8,16 @@
 #   - getbusbar/busbar (busbar's own image): plugin-free, same treatment every plugin gets.
 #     If you want a DIFFERENT plugin (or a custom set), start there and drop in tarballs
 #     yourself (docs/plugins.md in busbar).
-#   - getbusbar/headroom-hook (this repo's OWN image, see the root Dockerfile): that image
-#     predates busbar's dlopen plugin ABI and describes a retired Unix-socket transport this
-#     repo no longer builds a binary for — see that Dockerfile's header for the deprecation
-#     note. This bundle supersedes it as the "just run Headroom" path.
+#   - getbusbar/headroom-hook: the retired standalone Unix-socket image, which predates busbar's
+#     dlopen plugin ABI. This bundle supersedes it as the "just run Headroom" path.
 #
 # FROM scratch, because the binary is the whole product. The busbar binary is built from a sibling
-# ../busbar checkout (source of truth for busbar itself, see
-# .github/workflows/docker-bundle.yml) with the SAME PGO-mandatory release build busbar's own
-# release/docker pipelines use, so this image's busbar binary is equivalently optimized, not a
-# naive debug build. CA roots are compiled into the binary (webpki-roots), so no /etc/ssl needed.
+# ../busbar checkout (source of truth for busbar itself) with the SAME PGO-mandatory release
+# build busbar's own release/docker pipelines use, so this image's busbar binary is equivalently
+# optimized, not a naive debug build. The build context must already hold the staged inputs the
+# COPY lines below name (binaries/<arch>/busbar, plugins/<arch>/, providers.yaml); the GitHub
+# workflow that staged them is retired, so whatever builds this image must stage them. CA roots
+# are compiled into the binary (webpki-roots), so no /etc/ssl needed.
 #
 # busbar here is DYNAMICALLY linked against musl, NOT static-pie like busbar's own image, and
 # that difference is load-bearing rather than incidental. A fully static musl binary has no
@@ -40,9 +40,9 @@
 #
 # headroom-hook's signed plugin tarball ships PRE-INSTALLED at /etc/busbar/plugins, and the
 # baked-in default config.yaml (docker/bundle/config.yaml) enables plugins and wires headroom
-# into the default pool as a global rewrite gate — so compression works with zero plugin setup.
+# into the default pool as a rewrite gate — so compression works with zero plugin setup.
 # Mounting your own config.yaml (see below) replaces that default entirely; copy its
-# `plugins:`/`pools.*.hooks` blocks into yours to keep headroom wired.
+# `plugins:`/`hooks:`/`pools.*.hooks`/`limits:` blocks into yours to keep headroom wired.
 #
 # /lib/{ld-musl-*,libc.musl-*,libgcc_s,libstdc++}.* below are what the busbar binary and THIS
 # repo's headroom cdylib need to run and to dlopen(). ld-musl-<arch>.so.1 is the dynamic loader
@@ -50,8 +50,7 @@
 # (in Alpine the latter is a symlink to the former, and a symlink does not survive being carried
 # through a CI artifact, so both names are shipped as real files).
 # aarch64-unknown-linux-musl's Rust target does not support `cdylib` output under Rust's default
-# (crt-static-on) linking, so the cdylib is built with crt-static explicitly disabled (see the
-# workflow), which makes it a normally-dynamically-linked musl/C++ shared object instead of the
+# (crt-static-on) linking, so the cdylib is built with crt-static explicitly disabled, which makes it a normally-dynamically-linked musl/C++ shared object instead of the
 # usual self-contained static-pie one. Bundling its exact runtime libs (built in the same
 # musl-native container, so the ABI matches) is what makes dlopen() succeed in a FROM-scratch
 # image that otherwise has no libc at all. The mechanism — the musl-native rust:alpine build
@@ -63,7 +62,7 @@
 #     -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN \
 #     getbusbar/busbar-headroom
 #
-# Run (your own config — copy the plugins:/hooks: blocks from docker/bundle/config.yaml into it
+# Run (your own config — copy the plugins:/hooks:/pools.*.hooks/limits: blocks from docker/bundle/config.yaml into it
 # to keep headroom wired):
 #   docker run -d -p 8080:8080 \
 #     -e ANTHROPIC_KEY \
@@ -106,8 +105,8 @@ COPY docker/bundle/config.yaml /etc/busbar/config.yaml
 COPY plugins/${TARGETARCH}/busbar-headroom.tar.gz /etc/busbar/plugins/busbar-headroom.tar.gz
 COPY plugins/${TARGETARCH}/lib/ /lib/
 
-ENV BUSBAR_PROVIDERS=/etc/busbar/providers.yaml \
-    BUSBAR_CONFIG=/etc/busbar/config.yaml
+# providers.yaml next to config.yaml is busbar's default catalog path (BUSBAR_PROVIDERS is deprecated).
+ENV BUSBAR_CONFIG=/etc/busbar/config.yaml
 
 EXPOSE 8080
 USER 65532:65532

@@ -19,7 +19,7 @@ compression core (`TextCrusher`, pure BM25: no model, no network, no proxy).
 A `kind: hook` `prompt: rw` rewrite gate, shipped as a signed `dlopen`
 plugin busbar loads in-process over its plugin ABI (no standalone binary,
 no socket); targets busbar 1.6.0 (plugin ABI v2, the rev pinned in
-`.busbar-ref`) and pins a `headroom-core` rev.
+`.busbar-ref`) and pins a `headroom-core` release tag.
 
 ### Benchmark
 
@@ -65,11 +65,16 @@ more to gain from tuning the keep-ratio. What matters here is that the plumbing 
 sound: the mock upstream tallies the tokens it actually received, so these are the
 prompts that *really shipped* to the provider, not hook-side accounting.
 
-| content (11 KB) | input tokens before | after | saved |
+| content | input tokens before | after | saved |
 |---|--:|--:|--:|
-| noisy tool log | `2,832` | `1,422` | **49.8%** |
-| RAG dump | `4,211` | `2,127` | **49.5%** |
+| noisy tool log (11 KB) | `2,832` | `1,422` | **49.8%** |
+| RAG dump (~16 KB) | `4,211` | `2,127` | **49.5%** |
 | short chat | `22` | `22` | 0% (abstains) |
+
+`bench/docker_ab.py` reproduces the tool-log row and the latency table (openai ingress). The
+RAG-dump and short-chat rows, the abstain rates below, the cross-protocol figure and the
+in-process timings by history size above were measured with an earlier version of the harness
+that is no longer in `bench/`.
 
 Short conversational chats pass through byte-identical (100% abstain over 100 short
 chats; 0% over 100 compressible histories) — nothing to trim, nothing touched. And if
@@ -110,19 +115,18 @@ docker run -d -p 8080:8080 \
 
 Every request through the default pool is compressed immediately — no plugin install
 step. See [`docker/bundle/config.yaml`](docker/bundle/config.yaml) for the baked-in
-default config (one Anthropic provider, one pool, Headroom wired as a global
+default config (one Anthropic provider, one `default` pool, Headroom attached to it as a
 `prompt: rw` gate) and [`docker/bundle/Dockerfile`](docker/bundle/Dockerfile) for how
-the image is built — busbar compiled from source with the same PGO release build
-busbar's own official image uses, Headroom's cdylib built and signed alongside it in
-the same CI run. Mount your own `config.yaml` over `/etc/busbar/config.yaml` to
-replace the default entirely; copy the `plugins:`/`hooks:`/`pools.*.hooks` blocks from
-the baked-in default into yours to keep Headroom wired. Published by
-[`.github/workflows/docker-bundle.yml`](.github/workflows/docker-bundle.yml).
+the image is assembled: it copies a busbar binary built from source with the same PGO
+release build busbar's own official image uses, plus Headroom's signed cdylib, from a
+staged build context (`binaries/<arch>/busbar`, `plugins/<arch>/`, `providers.yaml`); the
+workflow that staged them is retired, so stage them yourself before `docker build`. Mount your own `config.yaml` over `/etc/busbar/config.yaml` to
+replace the default entirely; copy the `plugins:`/`hooks:`/`pools.*.hooks`/`limits:` blocks from
+the baked-in default into yours to keep Headroom wired.
 
 This image is distinct from `getbusbar/busbar` (busbar's own plugin-free image) and
-supersedes the old `getbusbar/headroom-hook` standalone image described later in this
-repo's history (that image predates busbar's dlopen plugin ABI and is no longer
-buildable — see the root `Dockerfile`'s header).
+supersedes the old `getbusbar/headroom-hook` standalone image, which predates busbar's
+dlopen plugin ABI and is no longer built.
 
 ### 2. Plugin drop-in (if you already run busbar)
 
@@ -132,7 +136,7 @@ first-party plugin:
 
 1. Grab the signed tarball for your platform from this repo's
    [Releases](https://github.com/GetBusbar/busbar-hook-headroom/releases/latest)
-   (`busbar-hook-headroom-<version>-<target>.tar.gz` — Linux x86_64/arm64, macOS
+   (`busbar-headroom-<version>-<target>.tar.gz` — Linux x86_64/arm64, macOS
    x86_64/arm64, Windows x86_64).
 2. Drop it into busbar's plugin directory and enable plugins in your `config.yaml`:
 
@@ -146,7 +150,7 @@ first-party plugin:
    ```yaml
    hooks:                    # the top-level definition map: the NAME is the instance
      headroom:
-       module: busbar-hook-headroom
+       module: headroom          # the plugin alias (the release manifest is named busbar-headroom)
        kind: gate
        prompt: rw            # the rewrite grant
        timeout_ms: 25        # ~550 µs typical; 25 ms is generous headroom
@@ -159,21 +163,24 @@ first-party plugin:
      hooks: [headroom]       # the reserved all-pools attach (or list it per-pool)
    ```
 
-The tarball is signed with busbar's release key, so in principle it loads as first-party
-with no extra trust configuration. In practice busbar 1.5.3's own released binaries embed
-no release public key, so they refuse every first-party plugin with
+The tarball is signed with busbar's release key, which busbar's release binaries embed,
+so it loads as first-party with no extra trust configuration.
 
-    manifest claims first-party publisher 'busbar' but this build embeds no busbar
-    release key, so it cannot be verified
+### Bound what the hook is shown
 
-Until that is fixed upstream you also need `plugins.trust.allow_unsigned: true`, and
-busbar will then log a per-plugin `WARN plugin validated as UNVERIFIED`. That is a busbar
-packaging defect rather than a property of this tarball; tracked at
-https://github.com/GetBusbar/busbar/issues/52.
+Set `limits.hook_content_max_bytes` (the shipped configs use 1 MiB). busbar's default is
+unlimited, and TextCrusher holds roughly 50x a message's size in memory while it works, on a
+thread busbar's `timeout_ms` cannot cancel: an 8 MB message peaked near 390 MB. Over the cap
+busbar shows the hook an empty projection and the gate abstains. The cap is global, applying to
+every `prompt: ro|rw` hook: a redaction or guardrail hook that must see every prompt fails open
+behind it, so raise or remove the cap if you run one. Compression time also grows
+with (history sentences) x (distinct words in the last message): a 54 KB history behind a
+23 KB final message took about 4.7 s of CPU, so the cap bounds that cost but does not make it
+small.
 
 ### Build from source
 
-Needs a Rust toolchain ([rustup](https://rustup.rs)); the pinned `headroom-core` rev is
+Needs a Rust toolchain ([rustup](https://rustup.rs)); the pinned `headroom-core` tag is
 in `Cargo.toml`. This builds the cdylib only (`crate-type = ["cdylib", "rlib"]` — there
 is no `[[bin]]`, no standalone executable), which you then sign/pack with busbar's own
 `busbar-plugin-pack` tool before busbar will load it as first-party (or load it
@@ -186,7 +193,7 @@ cargo build --release --lib   # cdylib: target/release/libbusbar_hook_headroom.s
 
 ### Settings
 
-`target_ratio` (default 0.5, the fraction of tokens to keep), `min_savings_pct`
+`target_ratio` (default 0.5, roughly the fraction of each history message's characters to keep), `min_savings_pct`
 (default 10, abstain below this saving), and `price_udollars_per_ktok` (default 2500,
 the $-estimate price) SEED the startup values — once busbar pushes settings live
 (over the admin API's hook-settings endpoint, or the `settings:` block in
@@ -204,28 +211,48 @@ No wire, no serialization — busbar calls the loaded plugin in-process through 
 
 | call | when | this hook's response |
 |---|---|---|
-| `configure` | on load + live on a settings PATCH | acks with the applied `settings_version` — only if the settings applied cleanly (commit-on-ack) |
-| `describe` | any time | `{schema, dashboard}` — the settings JSON Schema (`GET /api/v1/admin/hooks/headroom/schema`) + the dashboard widget layout |
+| `configure` | on a settings PATCH (busbar 1.6.0 passes the config-file `settings:` to `open` at load) | acks with the applied `settings_version` — only if the settings applied cleanly (commit-on-ack) |
+| `describe` | any time | `{schema, dashboard}` — the settings JSON Schema (served at `GET /api/v1/admin/hooks/headroom/schema`) + a dashboard widget layout that busbar 1.6.0 does not surface |
 | `status` | any time | `{status:{settings, metrics:[…]}}` — observed settings + self-reported metrics (see [Metrics](#metrics)) |
-| `decide` / `transform` | per request | `{"rewrite":{...}}` or `{}` (abstain) |
+| `transform` | per request | `{"rewrite":{...}}` or `{}` (abstain) |
+| `decide` | per request | always `{}` (abstain): Headroom ranks nothing |
 | `notify` | fire-and-forget (taps only) | none read |
 
-> **Note:** this table describes the message *shape* busbar's hook contract still
-> speaks conceptually (configure/describe/status/transform/notify); the *transport* it
-> travels over changed from the Unix-socket wire below to an in-process dlopen call
-> (`HookHandler` trait methods) when this hook was ported to busbar's signed plugin ABI
-> — see [Install and run](#install-and-run) above. The settings PATCH example and
-> config block further down are current; the raw socket framing is historical.
+What `transform` keeps verbatim: the last message (the ask) and any `system` or `developer`
+turn that arrives among the turns. It abstains (and still counts the request) when the last
+turn is not a `user` turn (an assistant prefill is not the ask), and when busbar has hoisted
+a system prompt into `request.system` on a dialect that can carry it inside the turns array
+(OpenAI chat, OpenAI Responses, Cohere): busbar 1.6.0 replaces that whole array with the
+rewrite, so a commit would ship the request without its system prompt. On Responses the
+hoisted text may also be the top-level `instructions`, which would survive, but the
+projection cannot tell the two apart, so Responses requests with instructions are not
+compressed. Anthropic, Bedrock and Gemini keep the system prompt in a body field of its own
+and compress normally. It
+also abstains when busbar projects a turn with the role `tool` (or
+`function`), which it does for tool results on OpenAI chat, OpenAI Responses and Cohere:
+busbar's projection is text-only and the rewrite replaces the whole messages array, so a
+rewrite there would drop the `tool_call_id`/`tool_calls` structure the provider requires.
+On Anthropic, Bedrock and Gemini, tool calls and results are blocks inside ordinary
+`user`/`assistant` turns, so the hook cannot see them: a committed rewrite flattens them
+to plain text (the provider accepts it, but the tool exchange becomes prose). Images and
+other non-text blocks inside a turn are likewise invisible to the projection and do not
+survive a committed rewrite. busbar documents this rewrite limitation (its `docs/hooks.md`,
+the `rewrite` arm).
 
 Settings (`target_ratio`, `min_savings_pct`, `price_udollars_per_ktok`)
 arrive as desired state: a key absent from the push resets to its default, a
 rejected push (unknown key, bad value) is never acked and busbar keeps the
-previous settings. Retune live, no restart:
+previous settings. For a hook instance created through the admin API, retune it live, no
+restart (the body wraps the map in `settings`):
 
 ```sh
 curl -X PATCH localhost:8080/api/v1/admin/hooks/headroom/settings \
-  -d '{"target_ratio": 0.3, "min_savings_pct": 20}'
+  -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" -H 'content-type: application/json' \
+  -d '{"settings": {"target_ratio": 0.3, "min_savings_pct": 20}}'
 ```
+
+busbar refuses (409) to patch a hook defined in the base `config.yaml`, which is how every
+example in this README defines it: edit its `settings:` block in `config.yaml` instead.
 
 ### Metrics
 
@@ -235,19 +262,28 @@ ways from that one source:
 - **Live JSON** — `GET /api/v1/admin/hooks/headroom/status` queries the hook on the spot (you set the
   resolution by how often you poll: hit it every second, get one-second-fresh data).
 - **Prometheus** — busbar's `/metrics/hooks` scrape renders the same metrics as standard text, with
-  the metric **names verbatim** and an automatic `hook="headroom"` label.
+  the metric **names verbatim** and an automatic `hook="<instance>"` label (`headroom` in these examples,
+  `busbar-headroom` in the bundled image and `config.example.yaml`).
 
 The series emitted, named exactly as they appear on the scrape:
 
 - `headroom_requests_total` — requests this hook saw, per pool.
-- `headroom_tokens_input_total` — estimated input tokens seen.
+- `headroom_tokens_input_total` — estimated input tokens sent upstream (after any rewrite), Headroom's
+  post-compression definition, so `saved / (input + saved)` is the reduction.
 - `headroom_tokens_saved_total` — estimated tokens removed by a committed rewrite.
 - `headroom_overhead_ms_sum` / `_count` / `_min` / `_max` — the hook's own wall-clock overhead.
   Counters and gauges, NOT a histogram: there are no quantile buckets to query.
 - `dollars_saved` — an estimate priced off `price_udollars_per_ktok`, not measured spend. busbar's
   `/usage` is the measured figure; use that for anything billing-facing.
 
-Every series carries a `pool` label, so one process serving N pools shows N rows.
+Savings are booked when the hook commits a rewrite. If busbar's `timeout_ms` has already given up on
+that call (busbar cannot cancel the thread, so the hook still finishes), the original body was sent,
+yet the rewrite is still counted: on slow, very large prompts tokens saved and dollars saved
+over-report, and input tokens under-report.
+
+Every series carries a `pool` label, so one instance serving N pools shows N rows. The counters live
+in the plugin instance: busbar opens a fresh instance on a config reload or a settings PATCH, and the
+series restart from zero then.
 
 Two caveats worth stating rather than discovering. The token and dollar figures are derived from a
 BYTE count divided by a chars-per-token constant, so on text that is not mostly ASCII (CJK, emoji,
@@ -270,12 +306,12 @@ plugins:
 
 hooks:
   headroom:
-    module: busbar-hook-headroom
+    module: headroom
     kind: gate
     prompt: rw                 # the rewrite grant
     timeout_ms: 25             # ~550 µs typical; 25 ms is generous headroom
     on_error: nothing          # a broken compressor never touches a request
-    settings:                  # pushed to the plugin on load, live-patchable after
+    settings:                  # handed to the plugin when busbar opens it
       target_ratio: 0.5
       min_savings_pct: 10
 
@@ -291,7 +327,7 @@ per-pool tokens and latency in `/metrics` or `GET /api/v1/admin/usage`.
 
 ```yaml
 hooks:
-  headroom: { module: busbar-hook-headroom, kind: gate, prompt: rw }
+  headroom: { module: headroom, kind: gate, prompt: rw, timeout_ms: 25, on_error: nothing }
 
 pools:
   # NB: no `pools.hooks:` here — the all-pools attach would put the gate on both arms.
@@ -311,15 +347,23 @@ pools:
 > were measured. Check `busbar --version` / release notes for the fix.
 
 [`scripts/docker-smoke.sh`](scripts/docker-smoke.sh) is the release-gate check: it
-builds and packs the plugin from this checkout, `dlopen`s it into a real
-`getbusbar/busbar` container, and proves the rewrite actually reaches the upstream
+builds and packs the plugin from this checkout, `dlopen`s it into a real busbar container
+(a dynamically linked busbar image at `.busbar-ref`, matching the plugin build's libc and
+architecture), and proves the rewrite actually reaches the upstream
 (fewer tokens shipped than arrived) — the class of failure `cargo test` alone can't
 catch (manifest/ABI load failures, a silent no-op gate).
 The `bench/` directory has the full measurement rig and results.
 
 ## Config
 
-Configured under the `headroom` module name.
+Configured as `module: headroom` (the plugin alias) under a hook instance in the top-level
+`hooks:` map. Use the alias: the signed release tarball's manifest is named `busbar-headroom`
+(busbar's plugin registry), while a build that links this crate, or a dev pack from `bench/`,
+names it `busbar-hook-headroom`; both carry the alias `headroom`. The examples in this README
+name the instance `headroom`; the bundled image, `config.example.yaml` and the bench configs
+name it `busbar-headroom`. The instance name is what busbar uses in the admin URLs
+(`/api/v1/admin/hooks/<instance>/...`) and in the `hook="<instance>"` metric label, so
+substitute yours.
 
 ## Build
 

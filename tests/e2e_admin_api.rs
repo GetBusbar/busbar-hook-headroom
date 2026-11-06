@@ -388,7 +388,6 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
             .env("E2E_ADMIN_TOKEN", &admin_token)
             .env("BUSBAR_SIGNING_KEY", TEST_SIGNING_KEY)
             .env("MOCK_KEY", "unused-mock-provider-key")
-            .env("BUSBAR_STATE_FILE", "")
             .env("BUSBAR_CONFIG_OVERLAY", &overlay)
             .stdout(Stdio::from(log.try_clone().expect("clone log fd")))
             .stderr(Stdio::from(log));

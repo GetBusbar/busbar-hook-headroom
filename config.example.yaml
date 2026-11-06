@@ -32,14 +32,23 @@ models:
   claude:
     provider: anthropic
     max_concurrent: 10
-    upstream_model: claude-3-5-sonnet-20241022
+    upstream_model: claude-sonnet-5-5
+
+# Bound the prompt a content-granted hook is shown. TextCrusher holds roughly 50x a message's size
+# in memory while it works (an 8 MB message peaked near 390 MB), on a thread busbar's timeout_ms
+# cannot cancel, so an uncapped prompt near the request body limit can exhaust the host's memory.
+# Over the cap busbar shows the hook an empty projection and the gate abstains. The cap is
+# GLOBAL: it applies to every `prompt: ro|rw` hook, so if you add a redaction or guardrail hook
+# that must see every prompt, raise or remove it (busbar's default is 0, unlimited, for that reason).
+limits:
+  hook_content_max_bytes: 1048576   # 1 MiB
 
 # A hook instance is DEFINED once here and REFERENCED by bare name from a pool. This replaces both
 # the inline hook maps that used to sit under `pools.*.hooks` and the removed top-level
 # `global_hooks:` list.
 hooks:
   busbar-headroom:
-    module: busbar-hook-headroom
+    module: headroom            # the plugin alias: matches the signed release tarball and a dev pack alike
     kind: gate
     prompt: rw              # the rewrite grant
     timeout_ms: 25
@@ -61,9 +70,5 @@ pools:
 plugins:
   enabled: true
   dir: /etc/busbar/plugins  # or wherever you unpacked the signed tarball
-  # busbar 1.5.3's own released binaries embed no plugin release public key, so they refuse every
-  # correctly-signed first-party tarball with "manifest claims first-party publisher 'busbar' but
-  # this build embeds no busbar release key". Until that is fixed upstream this opt-in is required
-  # even for a signed release artifact; busbar then logs a per-plugin UNVERIFIED warning.
-  # See https://github.com/GetBusbar/busbar/issues/52
-  trust: { allow_unsigned: true }
+  # No trust opt-in: busbar's release binaries embed the release public key, so the signed
+  # first-party tarball verifies with zero configuration.
