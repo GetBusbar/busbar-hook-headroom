@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::json;
 
 /// `open` accepts empty/missing config and a valid settings map; a malformed config or an
 /// out-of-range/unknown-key settings map fails closed.
@@ -18,64 +19,26 @@ fn open_config_handling() {
     );
 }
 
-/// The linked row's name and alias. The signed release tarball's manifest is named by busbar's
-/// plugin registry (`busbar-headroom` at 1.6.0); both carry the alias `headroom`, which is what the
-/// shipped configs reference, so `module: headroom` resolves through either door.
+/// The actual current door carries the operator-facing alias and name.
 #[test]
 fn linked_row_states_the_shipped_manifest_name() {
-    assert_eq!(linked::HOOK.0, "busbar-hook-headroom");
-    assert_eq!(linked::HOOK.1, "headroom");
+    let row = busbar_plugin_loader::dispatch::LinkedRow::of(door).unwrap();
+    let statement = busbar_contract::abi::mechanism::rendering::read(&row.statement).unwrap();
+    assert_eq!(statement.name, "busbar-hook-headroom");
+    assert!(statement.rewrites.iter().any(|r| r.1 == "headroom"));
 }
 
-/// Records the capturing sink received (level, message). Process-global because the SDK's host log
-/// sink is process-global.
-static CAPTURED: Mutex<Vec<(u32, String)>> = Mutex::new(Vec::new());
-
-extern "C" fn capture_sink(_ctx: *mut std::ffi::c_void, level: u32, msg: *const u8, len: usize) {
-    // SAFETY: the SDK passes a valid (ptr, len) borrowed for this call only.
-    let s = unsafe { std::slice::from_raw_parts(msg, len) };
-    CAPTURED
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .push((level, String::from_utf8_lossy(s).into_owned()));
-}
-
-/// A rejected `configure` NACKs AND tells the operator why: one WARN record naming the offending
-/// setting and the validation reason.
+/// Configure refusal carries its reason through the current ABI instead of a global log sink.
 #[test]
-fn rejected_configure_logs_the_reason() {
-    use busbar_contract::abi::cold::log_level;
-    // SAFETY: `capture_sink` is a `'static` fn and the null ctx is never dereferenced.
-    unsafe {
-        busbar_contract::abi::sdk::hostlog::install_sink(
-            capture_sink,
-            std::ptr::null_mut(),
-            log_level::TRACE,
-        );
-    }
+fn rejected_configure_returns_the_reason() {
     let h = Headroom::new(Knobs::default());
-    let bad = json!({"target_ratio": 5});
-    assert!(!h.configure(bad.as_object().unwrap(), 4242));
-    let got = CAPTURED.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let rec: Vec<_> = got
-        .iter()
-        .filter(|(_, m)| m.contains("configure v4242"))
-        .collect();
-    assert_eq!(
-        rec.len(),
-        1,
-        "exactly one record for the rejected push: {got:?}"
+    let why = h
+        .configure(json!({"target_ratio": 5}).as_object().unwrap(), 4242)
+        .unwrap_err();
+    assert!(
+        why.contains("target_ratio") && why.contains("4242"),
+        "{why}"
     );
-    assert_eq!(rec[0].0, log_level::WARN);
-    assert!(rec[0].1.contains("target_ratio"), "{}", rec[0].1);
-}
-
-/// `decide` and `notify` are inert (Headroom is not a router or a tap).
-#[test]
-fn decide_and_notify_are_inert() {
-    let h = Headroom::new(Knobs::default());
-    assert_eq!(h.decide(&json!({})), json!({}));
-    h.notify(&json!({"anything": true})); // no panic, no effect
 }
 
 /// `configure` applies pushed settings LIVE and returns `true`/ACK on a clean apply; the next
@@ -94,19 +57,22 @@ fn configure_applies_settings_live() {
         }
     });
     assert!(
-        h.transform(&payload).get("rewrite").is_some(),
+        h.transform_payload(&payload).get("rewrite").is_some(),
         "defaults must rewrite this history"
     );
 
     let mut settings = Map::new();
     settings.insert("target_ratio".into(), json!(0.4));
     settings.insert("min_savings_pct".into(), json!(100.0));
-    assert!(h.configure(&settings, 7), "a well-formed push must ACK");
+    assert!(
+        h.configure(&settings, 7).is_ok(),
+        "a well-formed push must ACK"
+    );
     assert_eq!(h.knobs.read().unwrap().target_ratio, 0.4);
     assert_eq!(h.knobs.read().unwrap().min_savings_pct, 100.0);
     // The same instance's NEXT transform sees the pushed settings.
     assert_eq!(
-        h.transform(&payload),
+        h.transform_payload(&payload),
         json!({}),
         "min_savings_pct 100 must abstain"
     );
@@ -121,7 +87,7 @@ fn configure_is_desired_state() {
         ..Knobs::default()
     });
     assert!(
-        h.configure(&Map::new(), 3),
+        h.configure(&Map::new(), 3).is_ok(),
         "empty map (back to defaults) must ACK"
     );
     assert_eq!(h.knobs.read().unwrap().target_ratio, 0.5);
@@ -145,7 +111,7 @@ fn bad_configure_never_acks_and_keeps_settings() {
             ..Knobs::default()
         });
         let settings = v.as_object().unwrap();
-        assert!(!h.configure(settings, 9), "must NACK {settings:?}");
+        assert!(!h.configure(settings, 9).is_ok(), "must NACK {settings:?}");
         assert_eq!(
             h.knobs.read().unwrap().target_ratio,
             0.3,
@@ -163,7 +129,7 @@ fn status_echoes_pushed_settings_exactly_as_pushed() {
     let h = Headroom::new(Knobs::default());
     let pushed =
         json!({"target_ratio": 1, "min_savings_pct": 10, "price_udollars_per_ktok": 2500.5});
-    assert!(h.configure(pushed.as_object().unwrap(), 2));
+    assert!(h.configure(pushed.as_object().unwrap(), 2).is_ok());
     let settings = h.status()["status"]["settings"].clone();
     for (key, want) in pushed.as_object().unwrap() {
         assert_eq!(
@@ -174,14 +140,20 @@ fn status_echoes_pushed_settings_exactly_as_pushed() {
     }
 
     // A later push that omits keys resets them to their defaults, and the echo follows.
-    assert!(h.configure(json!({"min_savings_pct": 20}).as_object().unwrap(), 3));
+    assert!(
+        h.configure(json!({"min_savings_pct": 20}).as_object().unwrap(), 3)
+            .is_ok()
+    );
     let settings = h.status()["status"]["settings"].clone();
     assert_eq!(settings["min_savings_pct"], json!(20));
     assert_eq!(settings["target_ratio"], json!(0.5));
     assert_eq!(settings["price_udollars_per_ktok"], json!(2500.0));
 
     // A rejected push leaves the echo on the last applied settings.
-    assert!(!h.configure(json!({"min_savings_pct": 101}).as_object().unwrap(), 4));
+    assert!(
+        !h.configure(json!({"min_savings_pct": 101}).as_object().unwrap(), 4)
+            .is_ok()
+    );
     assert_eq!(
         h.status()["status"]["settings"]["min_savings_pct"],
         json!(20)
@@ -237,4 +209,30 @@ fn malformed_open_config_does_not_echo_its_contents() {
         .expect("nonobject config is rejected");
     assert!(!error.contains("private-config-secret"));
     assert!(error.contains("invalid plugin config"));
+}
+
+#[test]
+fn checkpoint_commits_only_valid_settings_and_recreates_desired_defaults() {
+    let h = Headroom::new(Knobs::default());
+    let first = h
+        .configure_checkpoint(json!({"min_savings_pct": 20}).as_object().unwrap(), 3)
+        .unwrap()
+        .unwrap();
+    assert_eq!((first.revision, first.settings_version), (1, 3));
+    assert!(
+        h.configure_checkpoint(json!({"min_savings_pct": 101}).as_object().unwrap(), 4)
+            .is_err()
+    );
+    assert_eq!(h.status()["status"]["settings_version"], 3);
+    let second = h.configure_checkpoint(&Map::new(), 5).unwrap().unwrap();
+    assert_eq!((second.revision, second.settings_version), (2, 5));
+    let replay = open(std::str::from_utf8(second.settings()).unwrap()).unwrap();
+    assert_eq!(
+        replay.status()["status"]["settings"],
+        h.status()["status"]["settings"]
+    );
+    assert_eq!(
+        h.knobs.read().unwrap().min_savings_pct,
+        Knobs::default().min_savings_pct
+    );
 }
