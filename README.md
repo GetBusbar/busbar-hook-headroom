@@ -19,7 +19,8 @@ compression core (`TextCrusher`, pure BM25: no model, no network, no proxy).
 A `kind: hook` `prompt: rw` rewrite gate, shipped as a signed `dlopen`
 plugin busbar loads in-process over its plugin ABI (no standalone binary,
 no socket); targets busbar 1.6.0 (plugin ABI v2, the rev pinned in
-`.busbar-ref`) and pins a `headroom-core` release tag.
+`.busbar-ref`) and pins an exact upstream `headroom-core` commit (`74b7ac23861944f1411d30c5394043ec0505b334`,
+the maintained bundled-SQLite upgrade).
 
 ### Benchmark
 
