@@ -48,6 +48,10 @@
 
 mod support;
 
+#[path = "support/fresh_namespace.rs"]
+mod fresh_namespace;
+use fresh_namespace::initialize_and_serve;
+
 use base64::Engine as _;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -308,7 +312,7 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
             "--kind",
             "hook",
             "--version",
-            "0.0.0-e2e",
+            env!("CARGO_PKG_VERSION"),
             "--publisher",
             "busbar",
             "--description",
@@ -371,6 +375,7 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
         format!(
             "listen: \"127.0.0.1:{port}\"\n\
              admin_listen: \"127.0.0.1:{admin_port}\"\n\
+             store: {{ module: memory }}\n\
              identity-providers:\n  admin-tokens: {{ module: admin-tokens, token: {{ env: E2E_ADMIN_TOKEN }} }}\n\
              auth:\n  chain: [keys]\n  signing_key: {{ env: BUSBAR_SIGNING_KEY }}\n  admin_auth: [admin-tokens]\n\
              limits:\n  request_body_max_bytes: 536870912\n\
@@ -400,7 +405,10 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
             .env("BUSBAR_CONFIG_OVERLAY", &overlay)
             .stdout(Stdio::from(log.try_clone().expect("clone log fd")))
             .stderr(Stdio::from(log));
-        cmd.spawn().expect("spawn a real busbar boot")
+        let attempt = label.parse().expect("numeric boot attempt");
+        initialize_and_serve(cmd, work, attempt)
+            .spawn()
+            .expect("spawn a real busbar boot")
     };
     let boot_log = |label: &str| {
         std::fs::read_to_string(work.join(format!("busbar-{label}.log"))).unwrap_or_default()
@@ -421,7 +429,7 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
         .post(format!("{admin}/plugins"))
         .bearer_auth(&admin_token)
         .json(&serde_json::json!({
-            "file": "headroom-0.0.0-e2e.tar.gz",
+            "file": format!("headroom-{}.tar.gz", env!("CARGO_PKG_VERSION")),
             "tarball_b64": tarball_b64,
         }))
         .send()
