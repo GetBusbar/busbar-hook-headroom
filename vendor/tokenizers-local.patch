@@ -1,0 +1,44 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -207,8 +207,8 @@
+ optional = true
+ default-features = false
+ 
+-[dependencies.paste]
+-version = "1.0.14"
++[dependencies.pastey]
++version = "0.1.0"
+ 
+ [dependencies.rand]
+ version = "0.9"
+--- a/Cargo.toml.orig
++++ b/Cargo.toml.orig
+@@ -91,7 +91,7 @@
+   "ureq",
+ ], default-features = false, optional = true }
+ daachorse = "3.0.0"
+-paste = "1.0.14"
++pastey = "0.1.0"
+ macro_rules_attribute = "0.2.0"
+ thiserror = "2"
+ fancy-regex = { version = "0.17", optional = true }
+--- a/src/utils/mod.rs
++++ b/src/utils/mod.rs
+@@ -136,7 +136,7 @@
+         ),*$(,)+
+     }
+     ) => {
+-        paste::paste!{
++        pastey::paste!{
+             $(#[$meta])*
+             #[derive(Serialize, Deserialize)]
+             #[serde(tag = "type", from = $struct_name "Deserializer")]
+@@ -185,7 +185,7 @@
+      $(#[$meta:meta])*
+      $vis:vis struct $struct_name:ident;
+     ) => {
+-        paste::paste!{
++        pastey::paste!{
+             $(#[$meta])*
+             $vis struct $struct_name;
+ 

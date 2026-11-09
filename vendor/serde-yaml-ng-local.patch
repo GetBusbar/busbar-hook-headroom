@@ -1,0 +1,150 @@
+--- a/src/libyaml/emitter.rs
++++ b/src/libyaml/emitter.rs
+@@ -4,6 +4,7 @@
+     ScalarStyle as SaferScalarStyle, SequenceStyle,
+ };
+ use std::io;
++use std::ptr::NonNull;
+ 
+ #[derive(Debug)]
+ pub(crate) enum Error {
+@@ -11,10 +12,10 @@
+ }
+ 
+ pub(crate) struct Emitter<'a> {
+-    safer_emitter: SaferEmitter<'a>,
+-    // The writer is stored inside safer_emitter, so we need to track it separately
+-    // for into_inner(). We use a pointer to avoid the borrow checker issue.
+-    writer_ptr: *mut (dyn io::Write + 'a),
++    // The backend borrows the allocation owned by writer_ptr. Destroy the backend
++    // before transferring or freeing that allocation, including on error/unwind.
++    safer_emitter: Option<SaferEmitter<'a>>,
++    writer_ptr: Option<NonNull<dyn io::Write + 'a>>,
+ }
+ 
+ #[derive(Debug)]
+@@ -61,35 +62,52 @@
+         safer_emitter.set_unicode(true);
+         safer_emitter.set_width(-1);
+ 
+-        // Store pointer to writer before passing reference to emitter
+-        let writer_ptr: *mut (dyn io::Write + 'a) = Box::into_raw(write);
++        let writer_ptr = NonNull::new(Box::into_raw(write)).unwrap();
++        // The allocation is stable until into_inner or Drop first destroys the
++        // backend. No other reference accesses the writer during that borrow.
+         unsafe {
+-            safer_emitter.set_output(&mut *writer_ptr);
++            safer_emitter.set_output(&mut *writer_ptr.as_ptr());
+         }
+ 
+         Emitter {
+-            safer_emitter,
+-            writer_ptr,
++            safer_emitter: Some(safer_emitter),
++            writer_ptr: Some(writer_ptr),
+         }
+     }
+ 
+     pub fn emit(&mut self, event: Event) -> Result<(), Error> {
+         let safer_event = convert_event(event)?;
+         self.safer_emitter
++            .as_mut()
++            .unwrap()
+             .emit(safer_event)
+             .map_err(|err| Error::Libyaml(LibyamlError::from_safer_error(err)))
+     }
+ 
+     pub fn flush(&mut self) -> Result<(), Error> {
+         self.safer_emitter
++            .as_mut()
++            .unwrap()
+             .flush()
+             .map_err(|err| Error::Libyaml(LibyamlError::from_safer_error(err)))
+     }
+ 
+-    pub fn into_inner(self) -> Box<dyn io::Write + 'a> {
+-        // Reconstruct the Box from the raw pointer
+-        // This is safe because we created it with Box::into_raw in new()
+-        unsafe { Box::from_raw(self.writer_ptr) }
++    pub fn into_inner(mut self) -> Box<dyn io::Write + 'a> {
++        drop(self.safer_emitter.take());
++        let writer = self.writer_ptr.take().unwrap();
++        // The backend's unique borrow is gone, and taking the pointer transfers
++        // ownership exactly once. Drop will find neither a backend nor a writer.
++        unsafe { Box::from_raw(writer.as_ptr()) }
++    }
++}
++
++impl Drop for Emitter<'_> {
++    fn drop(&mut self) {
++        drop(self.safer_emitter.take());
++        if let Some(writer) = self.writer_ptr.take() {
++            // The backend can no longer access this uniquely owned allocation.
++            unsafe { drop(Box::from_raw(writer.as_ptr())) }
++        }
+     }
+ }
+ 
+--- a/src/libyaml/util.rs
++++ b/src/libyaml/util.rs
+@@ -1,9 +1,7 @@
+ use std::cell::RefCell;
+ 
+-// Helper struct to store slice reference in a way that allows mutation
+-// libyaml_safer needs a &mut &[u8] that it can modify to track progress.
+-// We use RefCell to provide interior mutability, allowing us to get
+-// a mutable reference to the slice reference through a shared reference.
++// Stable, interior-mutable storage for the backend's advancing input slice.
++// RefCell supplies UnsafeCell storage here, not a dynamic borrow guard.
+ pub(crate) struct SliceRefStorage<'input> {
+     // Store the slice reference in a RefCell for interior mutability
+     // This allows libyaml_safer to modify the inner &[u8] reference
+@@ -12,17 +10,14 @@
+ }
+ 
+ impl<'input> SliceRefStorage<'input> {
+-    pub(crate) fn new(slice: &'input [u8]) -> (Self, &'input mut &'input [u8]) {
++    /// # Safety
++    /// The caller must retain this storage until the returned exclusive reference
++    /// is no longer used. Its inferred lifetime is not a borrow of the storage.
++    /// No second access to the cell may occur while that reference is live.
++    pub(crate) unsafe fn new(slice: &'input [u8]) -> (Self, &'input mut &'input [u8]) {
+         let cell = Box::new(RefCell::new(slice));
+-        // Use as_ptr() to get a raw pointer (this is safe - it just returns a pointer)
+-        // Then dereference it to get a mutable reference
+-        // This is safe because:
+-        // 1. The Box ensures the RefCell lives as long as SliceRefStorage
+-        // 2. We return SliceRefStorage alongside the reference, ensuring they have the same lifetime
+-        // 3. The reference will not outlive the storage because both are returned together
+-        // 4. We know the RefCell is not currently borrowed since we just created it
+-        // 5. libyaml_safer will store this reference and modify it, but the RefCell
+-        //    will ensure the borrow rules are maintained at runtime
++        // The allocation stays stable when Self moves. The caller, rather than
++        // RefCell's runtime checks, must enforce the lifetime and exclusivity.
+         let slice_ref_mut = unsafe { &mut *RefCell::as_ptr(&cell) };
+         (Self { _cell: cell }, slice_ref_mut)
+     }
+--- a/src/libyaml/parser.rs
++++ b/src/libyaml/parser.rs
+@@ -77,7 +77,9 @@
+             Cow::Borrowed(b) => {
+                 // Create storage for the slice reference and get mutable reference
+                 // The storage must live as long as the parser
+-                let (slice_storage, slice_ref_mut) = SliceRefStorage::new(b);
++                // Parser retains storage, and its backend field drops first.
++                // Only that backend accesses the exclusive slice reference.
++                let (slice_storage, slice_ref_mut) = unsafe { SliceRefStorage::new(b) };
+                 // libyaml_safer will store this and modify the inner &[u8] to track progress
+                 safer_parser.set_input_string(slice_ref_mut);
+                 (None, Cow::Borrowed(b), slice_storage)
+@@ -93,7 +95,9 @@
+                     unsafe { std::mem::transmute::<&[u8], &'input [u8]>(boxed_ref) };
+                 // Create storage for the slice reference and get mutable reference
+                 // The storage must live as long as the parser
+-                let (slice_storage, slice_ref_mut) = SliceRefStorage::new(extended);
++                // Parser retains both allocations until its backend drops;
++                // owned inputs never expose a borrowed Scalar::repr below.
++                let (slice_storage, slice_ref_mut) = unsafe { SliceRefStorage::new(extended) };
+                 // libyaml_safer will store this and modify the inner &[u8] to track progress
+                 safer_parser.set_input_string(slice_ref_mut);
+                 // Store the original input bytes for repr calculation

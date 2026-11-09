@@ -42,3 +42,11 @@ base64 = "0.22"
 # capture the exact request body busbar forwarded (proving the compression actually landed on the
 # wire), without needing a whole axum/tokio server stack in a blocking test.
 tiny_http = "0.12"
+
+# Regression witnesses share the exact YAML package selected by the SDK below.
+serde_yaml_ng = "0.10"
+
+# Bounded dependency corrections; provenance and local deltas are in vendor/README.md.
+[patch.crates-io]
+serde_yaml_ng = { path = "vendor/serde-yaml-ng-4d41b14" }
+tokenizers = { path = "vendor/tokenizers-0.23.2" }
