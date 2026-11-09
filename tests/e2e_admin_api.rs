@@ -329,6 +329,10 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
         .expect("run busbar-plugin-pack");
     assert!(status.success(), "packing the plugin must succeed");
 
+    let tarball_bytes = std::fs::read(&tarball).unwrap();
+    let archive_pin = busbar_contract::redacted::sha256_hex(&tarball_bytes);
+    let archive_file = format!("headroom-{}.tar.gz", env!("CARGO_PKG_VERSION"));
+
     let (upstream_port, captured) = spawn_mock_upstream();
 
     let admin_token = format!("e2e-admin-{}-{}", std::process::id(), free_port());
@@ -340,9 +344,7 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
     let overlay = work.join("overlay.json");
     std::fs::write(
         &providers_file,
-        format!(
-            "mock:\n  protocol: openai\n  base_url: \"http://127.0.0.1:{upstream_port}\"\n  api_key_env: MOCK_KEY\n"
-        ),
+        format!("mock:\n  protocol: openai\n  base_url: \"http://127.0.0.1:{upstream_port}\"\n"),
     )
     .unwrap();
 
@@ -372,6 +374,15 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
     // the reserved all-pools attach line INSIDE `pools:` (indented to the same level as a pool
     // name, since `hooks:` there is a reserved sibling key of the pool entries, not a pool).
     let base_config = |hook_defs: &str, pool_attach: &str| {
+        // Hook grammar validation runs before the Store can admit native images. Bind
+        // the installed archive on restart; boot #1 must still install via the admin API.
+        let archive_fetch = if hook_defs.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "  fetch:\n    - url: \"https://plugins.example/{archive_file}\"\n      sha256: \"{archive_pin}\"\n"
+            )
+        };
         format!(
             "listen: \"127.0.0.1:{port}\"\n\
              admin_listen: \"127.0.0.1:{admin_port}\"\n\
@@ -379,7 +390,8 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
              identity-providers:\n  admin-tokens: {{ module: admin-tokens, token: {{ env: E2E_ADMIN_TOKEN }} }}\n\
              auth:\n  chain: [keys]\n  signing_key: {{ env: BUSBAR_SIGNING_KEY }}\n  admin_auth: [admin-tokens]\n\
              limits:\n  request_body_max_bytes: 536870912\n\
-             plugins:\n  enabled: true\n  dir: {}\n  trust:\n    allow_unsigned: true\n\
+             advanced:\n  allow_destinations: [127.0.0.1]\n\
+             plugins:\n  enabled: true\n  dir: {}\n{archive_fetch}  trust:\n    allow_unsigned: true\n\
              providers:\n  mock:\n    api_key: {{ env: MOCK_KEY }}\n\
              models:\n  test-model:\n    provider: mock\n\
              {hook_defs}\
@@ -423,13 +435,12 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
     );
 
     // THE REAL INSTALL: POST the packed tarball's base64 bytes to the real admin API.
-    let tarball_bytes = std::fs::read(&tarball).unwrap();
     let tarball_b64 = base64::engine::general_purpose::STANDARD.encode(&tarball_bytes);
     let install_resp = client
         .post(format!("{admin}/plugins"))
         .bearer_auth(&admin_token)
         .json(&serde_json::json!({
-            "file": format!("headroom-{}.tar.gz", env!("CARGO_PKG_VERSION")),
+            "file": archive_file,
             "tarball_b64": tarball_b64,
         }))
         .send()
@@ -478,7 +489,7 @@ fn admin_api_installs_headroom_and_a_real_request_is_compressed_upstream() {
         // unmodified) and this test would then observe byte-identical bodies upstream even with a
         // correctly installed, correctly wired, correctly firing gate. Raise it generously.
         base_config(
-            "hooks:\n  headroom: { module: headroom, kind: gate, prompt: rw, timeout_ms: 500 }\n",
+            "hooks:\n  headroom: { module: headroom, kind: gate, prompt: rw, timeout_ms: 500, settings: {} }\n",
             "  hooks: [headroom]\n",
         ),
     )
