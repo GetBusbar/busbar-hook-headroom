@@ -14,8 +14,10 @@ crate-type = ["cdylib", "rlib"]
 # ONNX stack (ort/fastembed/magika) feature-gated OUT. This hook only needs TextCrusher, so the
 # lexical build is ~7x smaller (29MB -> ~3MB) and avoids the ONNX-in-distroless slow path. The
 # `ml`-feature gate landed UPSTREAM in headroomlabs-ai/headroom#2165, and the pin is an upstream
-# release tag that contains it. Bump the tag and Cargo.lock together on `dev` (RELEASING.md).
-headroom-core = { git = "https://github.com/headroomlabs-ai/headroom", tag = "v0.38.0", default-features = false }
+# release lineage that contains it. The exact upstream SQLite fix below upgrades bundled SQLite
+# through rusqlite 0.41 (headroomlabs-ai/headroom#4658). Update the revision and lock together
+# on `dev` (RELEASING.md); keep this lexical build free of the default ML feature.
+headroom-core = { git = "https://github.com/headroomlabs-ai/headroom", rev = "74b7ac23861944f1411d30c5394043ec0505b334", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # The ONE busbar crate this plugin names (#40: contract only; DECISIONS #84 merged the plugin SDK into
