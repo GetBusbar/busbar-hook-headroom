@@ -135,10 +135,19 @@ fn build_real_binaries() -> (PathBuf, PathBuf) {
     // `busbar-plugin-loader` package (`--features pack`), and building it separately keeps the `pack`
     // feature out of the `busbar` build.
     for args in [
-        &["build", "--release", "-p", "busbar", "--bin", "busbar"][..],
         &[
             "build",
             "--release",
+            "--locked",
+            "--manifest-path",
+            "dist/default/Cargo.toml",
+            "--bin",
+            "busbar",
+        ][..],
+        &[
+            "build",
+            "--release",
+            "--locked",
             "-p",
             "busbar-plugin-loader",
             "--features",
