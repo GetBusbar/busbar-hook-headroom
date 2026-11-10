@@ -1125,6 +1125,31 @@ fn a_prompt_omitted_by_the_content_cap_counts_its_real_size() {
     assert_eq!(m.pools["p"].chars_sent, 4_000_000);
 }
 
+/// Same content-cap scenario, but with a hoisted `request.system` still present. The system bytes
+/// make `chars_before > 0`, which used to fool the omission check into counting only `system_bytes`
+/// instead of `total_chars` — undercounting every capped prompt that carries a system prompt.
+#[test]
+fn content_cap_with_system_prompt_still_counts_total_chars() {
+    let knobs = locked(Knobs::default());
+    let metrics = Mutex::new(Metrics::default());
+    let system = "You are a helpful assistant that answers concisely.";
+    let payload = json!({"request": {
+        "pool": "p",
+        "system": system,
+        "total_chars": 4_000_000,
+        "messages": []
+    }});
+    assert_eq!(run_transform(&payload, &knobs, &metrics), json!({}));
+    let m = metrics.lock().unwrap();
+    assert_eq!(m.pools["p"].requests_seen, 1);
+    assert_eq!(
+        m.pools["p"].chars_sent,
+        4_000_000,
+        "chars_sent must be total_chars, not just the system bytes ({})",
+        system.len()
+    );
+}
+
 /// The ask is the BM25 query: the history segment that matches it survives a deep cut, while the
 /// same history compressed against a different ask loses it.
 #[test]

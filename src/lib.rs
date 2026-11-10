@@ -12,7 +12,8 @@
 //!   `request.messages` from the projection (only present when the operator granted `prompt: rw`),
 //!   keeps the LAST message (the ask) and any in-turn `system`/`developer` turn verbatim, and
 //!   BM25-compresses every other message against the ask. It never rewrites a prompt that does
-//!   not end on a `user` turn, that has a turn projected as role `tool`/`function`, or whose
+//!   not end on a `user` turn, that has a turn projected as role `tool`/`function`, that
+//!   contains a text-less turn (e.g. an image-only message projected as empty text), or whose
 //!   hoisted `request.system` rides in the turns array the rewrite replaces (every dialect but
 //!   anthropic, bedrock and gemini). Returns `{"rewrite": {"messages": [...]}}` (BODY form) IFF
 //!   whole-prompt byte savings clear `min_savings_pct`; otherwise `{}` abstain. Never fails the

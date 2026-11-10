@@ -3,7 +3,7 @@
 
 //! The pure half of the plugin: busbar's `transform` payload in, reply JSON out — plus the
 //! `configure`/`describe`/`status` support types the [`crate::Headroom`] gate wires into
-//! [`busbar_contract::abi::sdk::HookHandler`].
+//! [`busbar_contract::abi::sdk::hook::Hook`].
 //!
 //! This module has NO knowledge of the dlopen ABI or the SDK trait; it is unit testable on its
 //! own.
@@ -321,6 +321,37 @@ pub fn run_transform(payload: &Value, knobs: &RwLock<Knobs>, metrics: &Mutex<Met
     // ship it as empty content, which Anthropic and Bedrock reject.
     let has_text_less_turn = messages.iter().any(|m| m.text.trim().is_empty());
     let rewritable = !has_tool_turn && !drops_system && ends_on_user && !has_text_less_turn;
+
+    // Fast path: when the request can never be rewritten (tool turn, hoisted system on an
+    // in-band dialect, non-user ending, or a text-less turn), skip the per-message clone +
+    // json! construction — only sum the byte counts for metrics and return immediately.
+    if !rewritable {
+        for m in &messages {
+            chars_before += m.text.len();
+        }
+        let elapsed_us = started.elapsed().as_micros() as u64;
+        {
+            let mut m = metrics.lock().unwrap_or_else(|e| e.into_inner());
+            let s = m.pools.entry(pool).or_default();
+            s.requests_seen += 1;
+            let omitted = messages.is_empty() && total_chars > 0;
+            s.chars_sent += if omitted {
+                total_chars
+            } else {
+                chars_before as u64
+            };
+            s.overhead_us_sum += elapsed_us as u128;
+            s.overhead_us_min = if s.overhead_us_count == 0 {
+                elapsed_us
+            } else {
+                s.overhead_us_min.min(elapsed_us)
+            };
+            s.overhead_us_max = s.overhead_us_max.max(elapsed_us);
+            s.overhead_us_count += 1;
+        }
+        return abstain;
+    }
+
     for (i, m) in messages.iter().enumerate() {
         chars_before += m.text.len();
         let text = if !rewritable || i == last || is_instruction_role(&m.role) {
@@ -333,9 +364,18 @@ pub fn run_transform(payload: &Value, knobs: &RwLock<Knobs>, metrics: &Mutex<Met
             // PANIC CONTAINMENT: `TextCrusher` is third-party code on the request path. If it
             // panics on some input, keep that message verbatim instead of dying — a hook must
             // never crash on malformed/adversarial content.
-            compress_or_keep(&m.text, query, target_ratio, |text, q, ratio| {
+            let compressed = compress_or_keep(&m.text, query, target_ratio, |text, q, ratio| {
                 crusher.compress(text, q, Some(ratio)).compressed
-            })
+            });
+            // Guard: if the compressor returned an empty result for non-empty input, keep
+            // the original — an empty `content` in the rewrite causes providers (Anthropic,
+            // Bedrock) to reject the request outright, turning a working prompt into a hard
+            // failure.
+            if compressed.trim().is_empty() && !m.text.trim().is_empty() {
+                m.text.clone()
+            } else {
+                compressed
+            }
         };
         chars_after += text.len();
         // BODY form: {role, content} — spliced verbatim into the request's `messages`.
@@ -363,7 +403,7 @@ pub fn run_transform(payload: &Value, knobs: &RwLock<Knobs>, metrics: &Mutex<Met
         // An empty projection with a non-zero `total_chars` is content busbar omitted over its
         // content cap: that prompt still went upstream whole, so count its real size. busbar
         // reports it in Unicode chars, not bytes, so on non-ASCII text this undercounts.
-        let omitted = messages.is_empty() && chars_before == 0;
+        let omitted = messages.is_empty() && total_chars > 0;
         s.chars_sent += if committed {
             chars_after as u64
         } else if omitted {
