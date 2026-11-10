@@ -286,6 +286,26 @@ pub fn run_transform(payload: &Value, knobs: &RwLock<Knobs>, metrics: &Mutex<Met
     let drops_system =
         system_bytes > 0 && !keeps_system_out_of_turns(parsed.request.ingress_protocol.as_deref());
     let Some(messages) = parsed.request.messages else {
+        // No prompt projection (grant absent or a decide fire). Still count it so
+        // `headroom_requests_total` includes every transform the engine sent us.
+        let started = std::time::Instant::now();
+        let elapsed_us = started.elapsed().as_micros() as u64;
+        {
+            let mut m = metrics.lock().unwrap_or_else(|e| e.into_inner());
+            let s = m.pools.entry(pool).or_default();
+            s.requests_seen += 1;
+            if total_chars > 0 {
+                s.chars_sent += total_chars;
+            }
+            s.overhead_us_sum += elapsed_us as u128;
+            s.overhead_us_min = if s.overhead_us_count == 0 {
+                elapsed_us
+            } else {
+                s.overhead_us_min.min(elapsed_us)
+            };
+            s.overhead_us_max = s.overhead_us_max.max(elapsed_us);
+            s.overhead_us_count += 1;
+        }
         return abstain;
     };
     let (target_ratio, min_savings_pct) = {
@@ -354,7 +374,7 @@ pub fn run_transform(payload: &Value, knobs: &RwLock<Knobs>, metrics: &Mutex<Met
 
     for (i, m) in messages.iter().enumerate() {
         chars_before += m.text.len();
-        let text = if !rewritable || i == last || is_instruction_role(&m.role) {
+        let text = if i == last || is_instruction_role(&m.role) {
             // The ask is kept verbatim, and so is an instruction (`system`/`developer`) turn that
             // arrives among the turns (an engine that projects in-band system turns in place, or
             // a mid-conversation developer turn): compressing it would shred the operator's own
@@ -393,21 +413,15 @@ pub fn run_transform(payload: &Value, knobs: &RwLock<Knobs>, metrics: &Mutex<Met
     // "compressed nothing" and "made it longer" satisfy `savings_pct >= 0.0`. Committing there
     // reports a rewrite that achieved nothing while still paying its full cost: the engine replaces
     // the request's whole messages array with this reply. Require an actual reduction.
-    let committed = rewritable && chars_after < chars_before && savings_pct >= min_savings_pct;
+    let committed = chars_after < chars_before && savings_pct >= min_savings_pct;
 
     // Record metrics for this request (poison-tolerant; one short critical section).
     {
         let mut m = metrics.lock().unwrap_or_else(|e| e.into_inner());
         let s = m.pools.entry(pool).or_default();
         s.requests_seen += 1;
-        // An empty projection with a non-zero `total_chars` is content busbar omitted over its
-        // content cap: that prompt still went upstream whole, so count its real size. busbar
-        // reports it in Unicode chars, not bytes, so on non-ASCII text this undercounts.
-        let omitted = messages.is_empty() && total_chars > 0;
         s.chars_sent += if committed {
             chars_after as u64
-        } else if omitted {
-            total_chars
         } else {
             chars_before as u64
         };

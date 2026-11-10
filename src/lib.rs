@@ -85,14 +85,17 @@ impl Headroom {
         let mut revision = self.revision.lock().unwrap_or_else(|e| e.into_inner());
         let next = revision
             .checked_add(1)
-            .ok_or("headroom: configuration revision exhausted")?;
+            .ok_or_else(|| format!("headroom: configure v{version}: revision counter exhausted"))?;
         // Desired-state settings reconstruct all knobs, including defaults for absent keys.
         // Validate and own the complete checkpoint before changing the live configuration.
         let checkpoint = ConfigureCheckpoint::new(
             next,
             version,
-            serde_json::to_vec(&knobs.pushed).map_err(|_| "headroom: cannot encode settings")?,
-        )?;
+            serde_json::to_vec(&knobs.pushed).map_err(|e| {
+                format!("headroom: configure v{version}: cannot encode settings: {e}")
+            })?,
+        )
+        .map_err(|e| format!("headroom: configure v{version}: checkpoint rejected: {e}"))?;
         *self.knobs.write().unwrap_or_else(|e| e.into_inner()) = knobs;
         *revision = next;
         Ok(checkpoint)

@@ -112,10 +112,14 @@ fn bad_configure_never_acks_and_keeps_settings() {
         });
         let settings = v.as_object().unwrap();
         assert!(!h.configure(settings, 9).is_ok(), "must NACK {settings:?}");
+        let k = h.knobs.read().unwrap();
         assert_eq!(
-            h.knobs.read().unwrap().target_ratio,
-            0.3,
-            "settings must survive a rejected configure: {settings:?}"
+            k.target_ratio, 0.3,
+            "target_ratio must survive a rejected configure: {settings:?}"
+        );
+        assert_eq!(
+            k.min_savings_pct, 25.0,
+            "min_savings_pct must survive a rejected configure: {settings:?}"
         );
     }
 }
