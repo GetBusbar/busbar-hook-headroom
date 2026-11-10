@@ -5,7 +5,7 @@ use busbar_contract::abi::host::hook::{DecideFrame, DecideView};
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::hook_calls::{Answered, HookAxis, HookCalls};
 use busbar_contract::hooks::{
-    Candidate, HookStatus, RoutingContext, RoutingDecision, RoutingRequest, TransformOutcome,
+    Candidate, RoutingContext, RoutingDecision, RoutingRequest, TransformOutcome,
 };
 use busbar_plugin_loader::dispatch::kinds::hook::Hook;
 use busbar_plugin_loader::dispatch::{
@@ -30,6 +30,11 @@ fn dispatcher() -> Arc<Dispatcher> {
         Default::default(),
         busbar_contract::services::test_caller_binding(),
     ))
+}
+pub struct Status {
+    pub settings_version: Option<u64>,
+    pub settings: Option<serde_json::Map<String, serde_json::Value>>,
+    pub metrics: Option<Vec<serde_json::Value>>,
 }
 pub struct Policy(Arc<dyn HookCalls>);
 impl Policy {
@@ -76,7 +81,9 @@ impl Policy {
             axis.open(
                 "headroom",
                 "headroom",
-                &serde_json::from_str(settings).unwrap(),
+                &serde_json::from_str::<busbar_contract::plugin_settings::Settings>(settings)
+                    .unwrap()
+                    .prepare(),
                 Duration::from_secs(5),
             )
             .expect("registered hook opens"),
@@ -152,7 +159,11 @@ impl Policy {
         self.0
             .configure(
                 name,
-                &serde_json::to_string(settings).unwrap(),
+                &serde_json::from_value::<busbar_contract::plugin_settings::Settings>(
+                    serde_json::Value::Object(settings.clone()),
+                )
+                .unwrap()
+                .prepare(),
                 version,
                 budget,
             )
@@ -165,11 +176,11 @@ impl Policy {
             .get("schema")
             .cloned()
     }
-    pub async fn status(&self, budget: Duration) -> Option<HookStatus> {
+    pub async fn status(&self, budget: Duration) -> Option<Status> {
         let bytes = self.0.status(budget).await?;
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let s = value.get("status")?;
-        Some(HookStatus {
+        Some(Status {
             settings_version: s["settings_version"].as_u64(),
             settings: s["settings"].as_object().cloned(),
             metrics: s["metrics"].as_array().cloned(),
