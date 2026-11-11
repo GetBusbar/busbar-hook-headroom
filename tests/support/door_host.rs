@@ -26,10 +26,14 @@ pub fn plugin_path() -> std::path::PathBuf {
     p
 }
 fn dispatcher() -> Arc<Dispatcher> {
-    Arc::new(Dispatcher::new(
+    let dispatcher = Dispatcher::new(
         Default::default(),
         busbar_contract::services::test_caller_binding(),
-    ))
+    );
+    // Settings remain host-sealed on both linked and dropped paths. This fixture is
+    // the host, so it must explicitly lend the test authority before opening a hook.
+    assert!(dispatcher.lend_seal(busbar_contract::plugin::TestKernelSeal));
+    Arc::new(dispatcher)
 }
 pub struct Status {
     pub settings_version: Option<u64>,

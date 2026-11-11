@@ -70,6 +70,14 @@ const TEST_SIGNING_KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef
 /// `target/deps`, so checking only the former silently finds nothing even though the cdylib was
 /// really built.
 fn plugin_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("BUSBAR_PLUGIN_CDYLIB") {
+        let path = PathBuf::from(path);
+        assert!(
+            path.is_absolute() && path.is_file(),
+            "invalid admitted Headroom image"
+        );
+        return Some(path);
+    }
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
@@ -97,22 +105,12 @@ fn plugin_path() -> Option<PathBuf> {
     candidate
 }
 
-/// The busbar checkout the real binaries are built from: `$BUSBAR_CHECKOUT` when set, else a sibling
-/// `../busbar`. It must be the busbar rev this repo pins (`.busbar-ref` field 1) — CI checks it out
-/// at exactly that rev — so the binary under test is the one the plugin's `busbar-contract` names.
+/// The admitted host checkout supplied by native CI, or a sibling checkout for local use.
+/// The host revision and this plugin's SDK revision are independently pinned by the runner.
 fn busbar_root() -> PathBuf {
     std::env::var_os("BUSBAR_CHECKOUT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../busbar"))
-}
-
-/// Where the nested busbar build puts its binaries: `$BUSBAR_TARGET_DIR` when set, else the
-/// checkout's own `target/`. Never the outer `cargo test`'s `CARGO_TARGET_DIR`, which that cargo
-/// still holds locked.
-fn busbar_target() -> PathBuf {
-    std::env::var_os("BUSBAR_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| busbar_root().join("target"))
 }
 
 /// Under `CI` a missing prerequisite is a HARD FAILURE, never a silent skip (mirrors the sibling
@@ -127,53 +125,30 @@ fn require_or_skip(ok: bool, what: &str) -> bool {
             "{what} is unavailable under CI: refusing to silently skip the real admin-API e2e test"
         );
     }
-    eprintln!("skip: {what} unavailable (set BUSBAR_CHECKOUT to a busbar checkout at .busbar-ref)");
+    eprintln!("skip: {what} unavailable (set BUSBAR_CHECKOUT to the admitted host checkout)");
     false
 }
 
-/// Build (once; cached by cargo across runs) the real `busbar` and `busbar-plugin-pack` binaries
-/// from the busbar checkout ([`busbar_root`]) — never a fixture, never a stub.
+/// Build the actual admitted sources. Native CI runs this preparation before nextest;
+/// the cached invocation here still asks Cargo to verify source freshness before reuse.
 fn build_real_binaries() -> (PathBuf, PathBuf) {
-    let root = busbar_root();
-    // Two invocations: in busbar 1.6.0 `busbar-plugin-pack` is a feature-gated bin of the
-    // `busbar-plugin-loader` package (`--features pack`), and building it separately keeps the `pack`
-    // feature out of the `busbar` build.
-    for args in [
-        &[
-            "build",
-            "--release",
-            "--locked",
-            "--manifest-path",
-            "dist/default/Cargo.toml",
-            "--bin",
-            "busbar",
-        ][..],
-        &[
-            "build",
-            "--release",
-            "--locked",
-            "-p",
-            "busbar-plugin-loader",
-            "--features",
-            "pack",
-            "--bin",
-            "busbar-plugin-pack",
-        ][..],
-    ] {
-        let status = Command::new("cargo")
-            .args(args)
-            .current_dir(&root)
-            .env("CARGO_TARGET_DIR", busbar_target())
-            .status()
-            .expect("run cargo build for busbar / busbar-plugin-pack");
-        assert!(
-            status.success(),
-            "building the real busbar + busbar-plugin-pack binaries must succeed ({args:?})"
-        );
-    }
+    let target = PathBuf::from(
+        std::env::var_os("CARGO_TARGET_DIR")
+            .expect("CARGO_TARGET_DIR must name the assigned native target directory"),
+    );
+    let prepare = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testing/native/prepare.sh");
+    let status = Command::new("bash")
+        .arg(prepare)
+        .env("BUSBAR_CHECKOUT", busbar_root())
+        .status()
+        .expect("run the owner preparation hook for the actual busbar binaries");
+    assert!(
+        status.success(),
+        "building the actual busbar binaries failed"
+    );
     (
-        busbar_target().join("release/busbar"),
-        busbar_target().join("release/busbar-plugin-pack"),
+        target.join("debug/busbar"),
+        target.join("debug/busbar-plugin-pack"),
     )
 }
 
