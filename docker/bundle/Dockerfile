@@ -83,8 +83,10 @@
 # can silently drop the sticky bit on a plain multi-stage COPY, giving "Permission denied"
 # instead. A tiny busybox stage seeds a
 # real, world-writable /tmp so the fallback path works wherever memfd isn't available, without
-# adding anything to the final image but the directory entry itself.
-FROM busybox:latest AS tmp-seed
+# adding anything to the final image but the directory entry itself. The stage runs a shell at
+# build time, so it is pinned to an exact release and its multi-arch index digest rather than a
+# floating tag; bump both together.
+FROM busybox:1.38.0@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4 AS tmp-seed
 RUN mkdir -p /tmp-seed/tmp && chmod 1777 /tmp-seed/tmp
 
 FROM scratch
